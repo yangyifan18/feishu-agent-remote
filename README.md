@@ -1,22 +1,24 @@
-# Feishu Agent Remote
+# 🚀 Feishu Agent Remote
 
-> 飞书线上专员：把你的本机 AI 编程 Agent 放进飞书，随时从手机上开工、切换上下文、汇报进度。
+[中文文档](README.zh-CN.md) · English
+
+> Bring your local coding agents into Feishu/Lark: start work from your phone, switch sessions, and ask agents to report progress like online teammates.
 
 Feishu Agent Remote is a lightweight remote-control layer for local coding agents. It listens to Feishu/Lark messages, maps them to local repositories and persistent Codex sessions, then replies back in chat like an always-on online teammate.
 
 ```text
-Feishu / Lark chat
+💬 Feishu / Lark chat
       ↓
-lark-cli event stream
+📡 lark-cli event stream
       ↓
-Feishu Agent Remote
+🧭 Feishu Agent Remote
       ↓
-local Codex sessions + repo allowlist
+🧑‍💻 local Codex sessions + repo allowlist
       ↓
-reply / report / optional user-identity sends
+📣 reply / report / optional user-identity sends
 ```
 
-## Why
+## ✨ Why
 
 Sometimes your laptop is running, but you are not in front of it.
 
@@ -30,7 +32,7 @@ You may be on your phone, in a Feishu group, trying to:
 
 Feishu Agent Remote turns that flow into a chat-native command console.
 
-## Highlights
+## 🧩 Highlights
 
 - **Feishu-first remote control**: private chat or configured group mentions can drive local work.
 - **Online helpers**: create named remote agents with `/new`, list them with `/remote-codex`, switch with `/attach`.
@@ -41,7 +43,7 @@ Feishu Agent Remote turns that flow into a chat-native command console.
 - **CLI-native Feishu integration**: built on the official `lark-cli` event consumer and IM commands.
 - **Mac-friendly daemon mode**: can be kept alive with `launchd`.
 
-## Status
+## 🧪 Status
 
 This project is early but already usable for a personal remote-work setup.
 
@@ -53,12 +55,23 @@ Current backend:
 - State store: SQLite
 - Config: local YAML-style file
 
-## Quick Start
+## ⚡ Quick Start For Humans
 
-### 1. Install dependencies
+This path is for people setting up their own Feishu/Lark remote agent from scratch.
+
+### 1. Prepare accounts and tools
+
+You need:
+
+- official `lark-cli`: https://github.com/larksuite/cli
+- Codex CLI installed and working locally
+- a Feishu/Lark bot app with message event permissions enabled
+- your own Feishu/Lark `open_id`
+
+### 2. Install Feishu Agent Remote
 
 ```bash
-git clone https://github.com/<you>/feishu-agent-remote.git
+git clone https://github.com/yangyifan18/feishu-agent-remote.git
 cd feishu-agent-remote
 
 python3 -m venv .venv
@@ -66,13 +79,7 @@ python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-You also need:
-
-- official `lark-cli`: https://github.com/larksuite/cli
-- Codex CLI installed and working locally
-- a Feishu/Lark bot app with message event permissions enabled
-
-### 2. Configure environment
+### 3. Configure environment
 
 Copy `.env.example` to `.env`:
 
@@ -89,7 +96,7 @@ YYF_CODEX_CONFIG=~/.yyf-codex/config.yaml
 YYF_CODEX_STATE=~/.yyf-codex/state.sqlite
 ```
 
-### 3. Configure repositories and owner
+### 4. Configure owner and repositories
 
 Create `~/.yyf-codex/config.yaml`:
 
@@ -120,32 +127,65 @@ If your Codex CLI needs a profile, set it here:
 codex_profile: fastrelay
 ```
 
-### 4. Run locally
+### 5. Run and talk to the bot
 
 ```bash
 .venv/bin/python main.py
 ```
-
-You should see the `lark-cli event` consumer become ready.
-
-### 5. Talk to the bot
 
 Private chat:
 
 ```text
 /status
 /new agent agent-console
-继续检查当前仓库状态
+Continue checking the current repository state
 ```
 
 Group chat:
 
 ```text
 @your-bot /status
-@your-bot /new app release-helper 检查发版风险
+@your-bot /new app release-helper Check release risks
 ```
 
-## Commands
+## 🤖 Quick Start For Agents
+
+This path is for coding agents or automation scripts that need to bootstrap the project quickly.
+
+### 1. Clone, install, verify
+
+```bash
+git clone https://github.com/yangyifan18/feishu-agent-remote.git
+cd feishu-agent-remote
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m py_compile main.py config.py remote_control/*.py
+```
+
+### 2. Create local config from templates
+
+```bash
+cp .env.example .env
+mkdir -p ~/.yyf-codex
+cp config.example.yaml ~/.yyf-codex/config.yaml
+```
+
+Then fill in, without committing secrets:
+
+- `.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
+- `~/.yyf-codex/config.yaml`: `owner_open_id`, `authorized_open_ids`, `repos`, optional `codex_profile`
+
+### 3. Runtime contract
+
+- The process starts with `python main.py`.
+- Input comes from `lark-cli event consume im.message.receive_v1 --as bot`.
+- Replies are sent through `lark-cli im +messages-reply --as bot`.
+- User-identity sends are gated by `/send` + `/approve`.
+- Do not write secrets into the repository.
+- Before reporting setup complete, run the test and compile commands above.
+
+## 🕹️ Commands
 
 | Command | What it does |
 | --- | --- |
@@ -167,26 +207,26 @@ Group chat:
 | `/approve <id>` | Approve and execute a pending confirmation. |
 | `/reject <id>` | Reject a pending confirmation. |
 
-## Example Flow
+## 💬 Example Flow
 
 ```text
 You: /new agent agent-console
 Bot: 已绑定 `agent-console`。Agent ID：rc_ab12cd34 ...
 
-You: 总结一下当前 repo 的进展，不要修改文件
-Bot: 当前目标是 ... 已完成 ... 下一步建议 ...
+You: Summarize current repo progress. Do not modify files.
+Bot: Current goal ... completed work ... next steps ...
 
 You: /remote-codex 5
 Bot: * rc_ab12cd34 `agent-console` repo=agent session=019e...
 
-You: /new app bug-hunter 检查最近失败的测试
+You: /new app bug-hunter Check recently failing tests
 Bot: 已从 `agent-console` 退出，切换到 `bug-hunter` ...
 
 You: /attach rc_ab12cd34
 Bot: 已从 `bug-hunter` 退出，切换到 `agent-console` ...
 ```
 
-## Safety Model
+## 🔐 Safety Model
 
 Feishu Agent Remote is intentionally conservative.
 
@@ -199,7 +239,7 @@ Feishu Agent Remote is intentionally conservative.
 
 This is still a remote-control tool for a local machine. Treat the Feishu bot as a privileged interface and keep the app secret, owner list, and repo allowlist tight.
 
-## Run As A macOS LaunchAgent
+## 🍎 Run As A macOS LaunchAgent
 
 For a personal Mac that should stay reachable after login, create a LaunchAgent that runs:
 
@@ -216,7 +256,7 @@ Recommended log paths:
 
 Use `KeepAlive=true` so the bot restarts if the event consumer exits.
 
-## Development
+## 🛠️ Development
 
 Run tests:
 
@@ -234,7 +274,7 @@ Current test coverage includes:
 - remote helper listing, attach, remove;
 - approval-gated user sends.
 
-## Roadmap
+## 🗺️ Roadmap
 
 - Rename hardcoded bot trigger text into config.
 - Add `/rename` for online helpers.
@@ -244,7 +284,7 @@ Current test coverage includes:
 - Support more local agent CLIs beyond Codex.
 - Add optional web dashboard for session history.
 
-## Name
+## 🪪 Name
 
 English: **Feishu Agent Remote**
 
@@ -252,6 +292,6 @@ Chinese: **飞书线上专员**
 
 The idea: your coding agents are no longer trapped inside a terminal window. They become remote, named, chat-addressable helpers that can wait, work, switch context, and report back.
 
-## License
+## 📄 License
 
 TBD.

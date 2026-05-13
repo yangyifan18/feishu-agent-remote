@@ -1,0 +1,297 @@
+# 🚀 Feishu Agent Remote
+
+中文 · [English](README.md)
+
+> 飞书线上专员：把你的本机 AI 编程 Agent 放进飞书，随时从手机上开工、切换上下文、汇报进度。
+
+Feishu Agent Remote 是一个轻量的本机 Agent 远程控制层。它监听飞书/Lark 消息，把聊天指令映射到本机 repo 和持久化 Codex session，然后像一个随时在线的协作伙伴一样在飞书里回复你。
+
+```text
+💬 飞书 / Lark 聊天
+      ↓
+📡 lark-cli 事件流
+      ↓
+🧭 Feishu Agent Remote
+      ↓
+🧑‍💻 本机 Codex sessions + repo 白名单
+      ↓
+📣 回复 / 汇报 / 可选的 user 身份发送
+```
+
+## ✨ 为什么需要它
+
+有时候电脑在跑，但你不在电脑前。
+
+你可能正在手机上、在飞书群里，想要：
+
+- 让 Agent 继续某个 repo 的工作；
+- 给一个任务创建全新的隔离 Codex session；
+- 查看远程编程助手当前在做什么；
+- 让它总结进度并同步给自己或团队；
+- 以自己的身份发一条消息，但必须先经过确认。
+
+Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
+
+## 🧩 亮点
+
+- **飞书优先的远程控制**：私聊或群聊 @ bot 都能驱动本机 Agent 工作。
+- **线上专员**：用 `/new` 创建具名远程 Agent，用 `/remote-codex` 查看，用 `/attach` 切换。
+- **持久 Codex session**：普通后续消息会恢复当前绑定 session，而不是每次重新开始。
+- **Repo 白名单**：只允许访问配置过的仓库。
+- **默认 owner-only**：未授权用户的命令会被忽略。
+- **高影响操作确认**：`/send` 只创建确认单，`/approve` 后才会以 user 身份发送。
+- **基于官方 CLI**：事件接收和 IM 回复基于 `lark-cli`。
+- **适合 Mac 常驻**：可以通过 `launchd` 保活。
+
+## 🧪 当前状态
+
+项目还处于早期，但已经能支撑个人远程工作流。
+
+当前后端：
+
+- 飞书/Lark 事件输入：`lark-cli event consume im.message.receive_v1 --as bot`
+- 飞书/Lark 回复：`lark-cli im +messages-reply --as bot`
+- 本机 Agent runtime：`codex exec` / `codex resume`
+- 状态存储：SQLite
+- 配置文件：本地 YAML 风格配置
+
+## ⚡ Quick Start For Humans
+
+这部分面向想自己搭一个飞书远程 Agent 的用户。
+
+### 1. 准备账号和工具
+
+你需要：
+
+- 官方 `lark-cli`：https://github.com/larksuite/cli
+- 本机可正常运行的 Codex CLI
+- 一个已开启消息事件权限的飞书/Lark bot 应用
+- 你自己的飞书/Lark `open_id`
+
+### 2. 安装 Feishu Agent Remote
+
+```bash
+git clone https://github.com/yangyifan18/feishu-agent-remote.git
+cd feishu-agent-remote
+
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. 配置环境变量
+
+复制 `.env.example` 到 `.env`：
+
+```bash
+cp .env.example .env
+```
+
+填入你的飞书/Lark 应用凭证：
+
+```dotenv
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+YYF_CODEX_CONFIG=~/.yyf-codex/config.yaml
+YYF_CODEX_STATE=~/.yyf-codex/state.sqlite
+```
+
+### 4. 配置 owner 和仓库白名单
+
+创建 `~/.yyf-codex/config.yaml`：
+
+```yaml
+owner_open_id: ou_xxxxxxxxxxxxxxxx
+default_repo: agent
+
+repos:
+  agent: /Users/you/Code/feishu-agent-remote
+  app: /Users/you/Code/my-app
+  infra: /Users/you/Code/my-infra
+
+authorized_open_ids:
+  - ou_xxxxxxxxxxxxxxxx
+
+codex_bin: codex
+codex_profile: null
+lark_cli_bin: lark-cli
+default_sandbox: workspace-write
+bot_names:
+  - feishu-agent-remote
+  - your-bot-name
+```
+
+如果你的 Codex CLI 需要 profile，可以这样设置：
+
+```yaml
+codex_profile: fastrelay
+```
+
+### 5. 启动并和 bot 对话
+
+```bash
+.venv/bin/python main.py
+```
+
+私聊：
+
+```text
+/status
+/new agent agent-console
+继续检查当前仓库状态
+```
+
+群聊：
+
+```text
+@your-bot /status
+@your-bot /new app release-helper 检查发版风险
+```
+
+## 🤖 Quick Start For Agents
+
+这部分面向需要快速接手、部署或验证项目的 coding agent / 自动化脚本。
+
+### 1. Clone、安装、验证
+
+```bash
+git clone https://github.com/yangyifan18/feishu-agent-remote.git
+cd feishu-agent-remote
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m py_compile main.py config.py remote_control/*.py
+```
+
+### 2. 从模板创建本地配置
+
+```bash
+cp .env.example .env
+mkdir -p ~/.yyf-codex
+cp config.example.yaml ~/.yyf-codex/config.yaml
+```
+
+然后补齐配置，但不要提交 secrets：
+
+- `.env`：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`
+- `~/.yyf-codex/config.yaml`：`owner_open_id`、`authorized_open_ids`、`repos`、可选的 `codex_profile`
+
+### 3. Runtime contract
+
+- 进程入口是 `python main.py`。
+- 输入来自 `lark-cli event consume im.message.receive_v1 --as bot`。
+- 回复通过 `lark-cli im +messages-reply --as bot` 发送。
+- user 身份发送必须经过 `/send` + `/approve`。
+- 不要把 secret 写进 repo。
+- 汇报 setup 完成前，先运行上面的 test 和 compile 命令。
+
+## 🕹️ 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/new repo=<alias> title=<title> [task]` | 创建新的线上专员，并绑定到当前聊天上下文。 |
+| `/new <alias> <title> [task]` | `/new` 的简写形式。 |
+| 普通文本 | 继续当前绑定的 Codex session。 |
+| `/status` | 查看当前线上专员、agent id、repo、Codex session id、状态和待确认事项。 |
+| `/remote-codex [n]` | 列出由这个 bot 创建或接管的线上专员。 |
+| `/attach <agent_id>` | 把当前聊天上下文切换到已有线上专员。 |
+| `/attach repo=<alias> <codex_session_id>` | 把已有本机 Codex session 接管为线上专员。 |
+| `/remove <agent_id> [agent_id ...]` | 删除一个或多个线上专员，并清除相关聊天绑定。 |
+| `/recent-codex [n]` | 扫描本机 `~/.codex/sessions` 中最近的 Codex session。 |
+| `/summarize repo=<alias> <codex_session_id>` | 让某个 Codex session 总结进度。 |
+| `/repo` | 列出已配置的 repo alias。 |
+| `/repo <alias>` | 切换当前绑定 session 的 repo alias。 |
+| `/sessions` | 查看已保存的本地聊天-session 绑定。 |
+| `/close` | 关闭当前聊天绑定，但不删除线上专员。 |
+| `/send <open_id> <text>` | 准备一条 user 身份消息，并创建确认单。 |
+| `/approve <id>` | 批准并执行待确认操作。 |
+| `/reject <id>` | 拒绝待确认操作。 |
+
+## 💬 示例流程
+
+```text
+你：/new agent agent-console
+Bot：已绑定 `agent-console`。Agent ID：rc_ab12cd34 ...
+
+你：总结一下当前 repo 的进展，不要修改文件
+Bot：当前目标是 ... 已完成 ... 下一步建议 ...
+
+你：/remote-codex 5
+Bot：* rc_ab12cd34 `agent-console` repo=agent session=019e...
+
+你：/new app bug-hunter 检查最近失败的测试
+Bot：已从 `agent-console` 退出，切换到 `bug-hunter` ...
+
+你：/attach rc_ab12cd34
+Bot：已从 `bug-hunter` 退出，切换到 `agent-console` ...
+```
+
+## 🔐 安全模型
+
+Feishu Agent Remote 默认偏保守。
+
+- 只有 `authorized_open_ids` 可以控制 bot。
+- 仓库必须显式写在配置文件里。
+- user 身份发送必须 `/approve`。
+- bot 回复和 user 身份发送分开处理。
+- Codex 使用配置中的 sandbox mode。
+- Secrets 应该留在 `.env` 和本地配置中，不要写进共享文档或提交。
+
+这仍然是一个可以远程控制本机的工具。请把飞书 bot 当作高权限入口来对待，谨慎管理 app secret、授权用户列表和 repo 白名单。
+
+## 🍎 作为 macOS LaunchAgent 常驻
+
+如果你希望 Mac 登录后自动保持可访问，可以创建一个 LaunchAgent 来运行：
+
+```bash
+/Users/you/Code/feishu-agent-remote/.venv/bin/python /Users/you/Code/feishu-agent-remote/main.py
+```
+
+推荐日志路径：
+
+```text
+~/Library/Logs/feishu-agent-remote/bot.out.log
+~/Library/Logs/feishu-agent-remote/bot.err.log
+```
+
+设置 `KeepAlive=true`，让 event consumer 退出时自动重启。
+
+## 🛠️ 开发
+
+运行测试：
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m py_compile main.py config.py remote_control/*.py
+```
+
+当前测试覆盖：
+
+- 配置读取；
+- Codex JSONL 解析；
+- 权限检查；
+- session 创建和恢复；
+- 线上专员列表、attach、remove；
+- 带审批的 user 身份发送。
+
+## 🗺️ Roadmap
+
+- 将 bot 触发词完全配置化。
+- 增加线上专员 `/rename`。
+- 增加不 resume Codex 的只读 session inspection。
+- 增加 `/cancel` 终止长时间运行的 Codex 子进程。
+- 增加 launchd installer/uninstaller。
+- 支持 Codex 之外的更多本机 Agent CLI。
+- 增加可选的 session history web dashboard。
+
+## 🪪 名字
+
+英文：**Feishu Agent Remote**
+
+中文：**飞书线上专员**
+
+核心想法：你的 coding agents 不再被困在终端窗口里。它们会变成可远程访问、可命名、可切换上下文、可随时汇报的线上专员。
+
+## 📄 License
+
+TBD.
