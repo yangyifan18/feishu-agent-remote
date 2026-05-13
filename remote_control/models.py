@@ -18,7 +18,7 @@ class RemoteConfig:
     codex_profile: str | None = None
     lark_cli_bin: str = "lark-cli"
     default_sandbox: str = "workspace-write"
-    bot_names: tuple[str, ...] = ("feishu-agent-remote", "yyf-codex")
+    bot_names: tuple[str, ...] = ("your-bot-name",)
 
 
 @dataclass(frozen=True)

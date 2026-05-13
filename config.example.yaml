@@ -14,5 +14,4 @@ codex_profile: null
 lark_cli_bin: lark-cli
 default_sandbox: workspace-write
 bot_names:
-  - feishu-agent-remote
-  - yyf-codex
+  - your-bot-name

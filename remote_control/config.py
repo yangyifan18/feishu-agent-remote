@@ -4,7 +4,7 @@ from typing import Any
 from .models import RemoteConfig, RepoConfig
 
 
-DEFAULT_CONFIG_PATH = Path("~/.yyf-codex/config.yaml").expanduser()
+DEFAULT_CONFIG_PATH = Path("~/.feishu-agent-remote/config.yaml").expanduser()
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
@@ -42,7 +42,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
         codex_profile=_optional_str(raw.get("codex_profile")),
         lark_cli_bin=str(raw.get("lark_cli_bin", "lark-cli")),
         default_sandbox=str(raw.get("default_sandbox", "workspace-write")),
-        bot_names=tuple(str(name) for name in raw.get("bot_names", ["feishu-agent-remote", "yyf-codex"])),
+        bot_names=tuple(str(name) for name in raw.get("bot_names", ["your-bot-name"])),
     )
 
 

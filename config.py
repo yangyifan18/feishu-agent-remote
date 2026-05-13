@@ -5,5 +5,5 @@ load_dotenv()
 
 FEISHU_APP_ID = os.environ["FEISHU_APP_ID"]
 FEISHU_APP_SECRET = os.environ["FEISHU_APP_SECRET"]
-YYF_CODEX_CONFIG = os.getenv("YYF_CODEX_CONFIG", "~/.yyf-codex/config.yaml")
-YYF_CODEX_STATE = os.getenv("YYF_CODEX_STATE", "~/.yyf-codex/state.sqlite")
+FAR_CONFIG = os.getenv("FAR_CONFIG") or os.getenv("YYF_CODEX_CONFIG", "~/.feishu-agent-remote/config.yaml")
+FAR_STATE = os.getenv("FAR_STATE") or os.getenv("YYF_CODEX_STATE", "~/.feishu-agent-remote/state.sqlite")

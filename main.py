@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any
 
-from config import YYF_CODEX_CONFIG, YYF_CODEX_STATE
+from config import FAR_CONFIG, FAR_STATE
 from remote_control.codex_runner import CodexRunner
 from remote_control.config import load_config
 from remote_control.lark_gateway import LarkGateway
@@ -14,8 +14,8 @@ from remote_control.state import StateStore
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-remote_config = load_config(YYF_CODEX_CONFIG)
-state = StateStore(YYF_CODEX_STATE)
+remote_config = load_config(FAR_CONFIG)
+state = StateStore(FAR_STATE)
 lark_gateway = LarkGateway(remote_config.lark_cli_bin)
 router = RemoteRouter(
     remote_config,

@@ -92,13 +92,13 @@ Fill in your Feishu/Lark app credentials:
 ```dotenv
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-YYF_CODEX_CONFIG=~/.yyf-codex/config.yaml
-YYF_CODEX_STATE=~/.yyf-codex/state.sqlite
+FAR_CONFIG=~/.feishu-agent-remote/config.yaml
+FAR_STATE=~/.feishu-agent-remote/state.sqlite
 ```
 
 ### 4. Configure owner and repositories
 
-Create `~/.yyf-codex/config.yaml`:
+Create `~/.feishu-agent-remote/config.yaml`:
 
 ```yaml
 owner_open_id: ou_xxxxxxxxxxxxxxxx
@@ -117,9 +117,10 @@ codex_profile: null
 lark_cli_bin: lark-cli
 default_sandbox: workspace-write
 bot_names:
-  - feishu-agent-remote
   - your-bot-name
 ```
+
+`bot_names` should match the display name or mention text of your own Feishu/Lark bot. Pick any name you like; it is not fixed by this project.
 
 If your Codex CLI needs a profile, set it here:
 
@@ -167,14 +168,14 @@ python3 -m venv .venv
 
 ```bash
 cp .env.example .env
-mkdir -p ~/.yyf-codex
-cp config.example.yaml ~/.yyf-codex/config.yaml
+mkdir -p ~/.feishu-agent-remote
+cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 ```
 
 Then fill in, without committing secrets:
 
 - `.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
-- `~/.yyf-codex/config.yaml`: `owner_open_id`, `authorized_open_ids`, `repos`, optional `codex_profile`
+- `~/.feishu-agent-remote/config.yaml`: `owner_open_id`, `authorized_open_ids`, `repos`, optional `codex_profile`
 
 ### 3. Runtime contract
 

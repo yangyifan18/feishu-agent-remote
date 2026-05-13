@@ -92,13 +92,13 @@ cp .env.example .env
 ```dotenv
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-YYF_CODEX_CONFIG=~/.yyf-codex/config.yaml
-YYF_CODEX_STATE=~/.yyf-codex/state.sqlite
+FAR_CONFIG=~/.feishu-agent-remote/config.yaml
+FAR_STATE=~/.feishu-agent-remote/state.sqlite
 ```
 
 ### 4. 配置 owner 和仓库白名单
 
-创建 `~/.yyf-codex/config.yaml`：
+创建 `~/.feishu-agent-remote/config.yaml`：
 
 ```yaml
 owner_open_id: ou_xxxxxxxxxxxxxxxx
@@ -117,9 +117,10 @@ codex_profile: null
 lark_cli_bin: lark-cli
 default_sandbox: workspace-write
 bot_names:
-  - feishu-agent-remote
   - your-bot-name
 ```
+
+`bot_names` 应该填写你自己的飞书/Lark bot 展示名或群聊中的 @ 名称。这个名字由用户自己选择，不是项目固定值。
 
 如果你的 Codex CLI 需要 profile，可以这样设置：
 
@@ -167,14 +168,14 @@ python3 -m venv .venv
 
 ```bash
 cp .env.example .env
-mkdir -p ~/.yyf-codex
-cp config.example.yaml ~/.yyf-codex/config.yaml
+mkdir -p ~/.feishu-agent-remote
+cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 ```
 
 然后补齐配置，但不要提交 secrets：
 
 - `.env`：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`
-- `~/.yyf-codex/config.yaml`：`owner_open_id`、`authorized_open_ids`、`repos`、可选的 `codex_profile`
+- `~/.feishu-agent-remote/config.yaml`：`owner_open_id`、`authorized_open_ids`、`repos`、可选的 `codex_profile`
 
 ### 3. Runtime contract
 

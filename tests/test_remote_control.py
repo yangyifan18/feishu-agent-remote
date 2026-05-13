@@ -118,7 +118,7 @@ class RemoteControlTests(unittest.TestCase):
             old_home = os.environ.get("HOME")
             os.environ["HOME"] = tmp
             try:
-                config_dir = Path(tmp) / ".yyf-codex"
+                config_dir = Path(tmp) / ".feishu-agent-remote"
                 config_dir.mkdir()
                 (config_dir / "config.yaml").write_text(
                     "\n".join(
@@ -131,7 +131,7 @@ class RemoteControlTests(unittest.TestCase):
                     )
                 )
 
-                config = load_config("~/.yyf-codex/config.yaml")
+                config = load_config("~/.feishu-agent-remote/config.yaml")
 
                 self.assertEqual(config.owner_open_id, "ou_owner")
             finally:
