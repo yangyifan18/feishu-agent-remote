@@ -1,0 +1,88 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class RepoConfig:
+    alias: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class RemoteConfig:
+    owner_open_id: str
+    authorized_open_ids: frozenset[str]
+    repos: dict[str, RepoConfig]
+    default_repo: str
+    codex_bin: str = "codex"
+    codex_profile: str | None = None
+    lark_cli_bin: str = "lark-cli"
+    default_sandbox: str = "workspace-write"
+    bot_names: tuple[str, ...] = ("feishu-agent-remote", "yyf-codex")
+
+
+@dataclass(frozen=True)
+class IncomingMessage:
+    message_id: str
+    chat_id: str
+    chat_type: str
+    sender_id: str
+    content: str
+    thread_id: str | None = None
+    root_message_id: str | None = None
+
+    @property
+    def thread_key(self) -> str:
+        return self.thread_id or self.root_message_id or self.message_id
+
+
+@dataclass(frozen=True)
+class SessionBinding:
+    chat_id: str
+    thread_key: str
+    repo_alias: str
+    repo_path: Path
+    codex_session_id: str
+    status: str
+    agent_id: str | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    id: str
+    action: str
+    requester_id: str
+    chat_id: str
+    message_id: str
+    payload: dict
+    status: str
+
+
+@dataclass(frozen=True)
+class CodexRunResult:
+    session_id: str | None
+    summary: str
+
+
+@dataclass(frozen=True)
+class CodexSessionMeta:
+    session_id: str
+    cwd: Path
+    timestamp: str
+    source: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class RemoteAgent:
+    id: str
+    title: str
+    repo_alias: str
+    repo_path: Path
+    codex_session_id: str
+    status: str
+    chat_id: str
+    thread_key: str
+    created_at: str
+    updated_at: str

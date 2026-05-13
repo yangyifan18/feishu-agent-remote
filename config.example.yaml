@@ -1,0 +1,18 @@
+owner_open_id: ou_xxxxxxxxxxxxxxxx
+default_repo: agent
+
+repos:
+  agent: /Users/you/Code/feishu-agent-remote
+  app: /Users/you/Code/my-app
+  infra: /Users/you/Code/my-infra
+
+authorized_open_ids:
+  - ou_xxxxxxxxxxxxxxxx
+
+codex_bin: codex
+codex_profile: null
+lark_cli_bin: lark-cli
+default_sandbox: workspace-write
+bot_names:
+  - feishu-agent-remote
+  - yyf-codex
