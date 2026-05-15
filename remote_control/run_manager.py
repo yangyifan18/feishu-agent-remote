@@ -5,15 +5,24 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import CodexRunResult, RunRecord
+from .models import RuntimeRunResult, RunRecord
+from .runtimes import RuntimeRegistry
 from .state import StateStore
 
 
 class RunManager:
-    def __init__(self, state: StateStore, codex_runner: Any):
+    def __init__(self, state: StateStore, runtime_registry: Any):
         self.state = state
-        self.codex_runner = codex_runner
+        self.runtime_registry = runtime_registry if isinstance(runtime_registry, RuntimeRegistry) else RuntimeRegistry({"codex": runtime_registry})
         self._agent_locks: dict[str, asyncio.Lock] = {}
+
+    @property
+    def codex_runner(self) -> Any:
+        return self.runtime_registry.get("codex")
+
+    @codex_runner.setter
+    def codex_runner(self, runner: Any) -> None:
+        self.runtime_registry._runners["codex"] = runner
 
     def running_for_agent(self, agent_id: str) -> RunRecord | None:
         return self.state.get_running_run_for_agent(agent_id)
@@ -26,7 +35,8 @@ class RunManager:
         repo_alias: str,
         repo_path: Path,
         prompt: str,
-    ) -> tuple[RunRecord, CodexRunResult]:
+        runtime: str = "codex",
+    ) -> tuple[RunRecord, RuntimeRunResult]:
         run = self.state.create_run(
             agent_id=None,
             chat_id=chat_id,
@@ -35,16 +45,18 @@ class RunManager:
             repo_path=repo_path,
             codex_session_id=None,
             prompt=prompt,
+            runtime=runtime,
         )
         try:
-            result = _normalize_result(await self.codex_runner.start(
+            runner = self.runtime_registry.get(runtime)
+            result = _normalize_result(await runner.start(
                 repo_path,
                 prompt,
                 on_started=lambda pid: self.state.mark_run_running(run.id, pid),
             ))
         except Exception as exc:
-            result = CodexRunResult(session_id=None, summary=f"Codex 执行异常：{exc}", status="failed")
-        self._finish(run.id, result)
+            result = RuntimeRunResult(session_id=None, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
+        self._finish(run.id, result, runtime)
         return self.state.get_run(run.id) or run, result
 
     async def resume_agent(
@@ -55,9 +67,10 @@ class RunManager:
         message_id: str,
         repo_alias: str,
         repo_path: Path,
-        codex_session_id: str,
+        runtime_session_id: str,
         prompt: str,
-    ) -> tuple[RunRecord, CodexRunResult]:
+        runtime: str = "codex",
+    ) -> tuple[RunRecord, RuntimeRunResult]:
         async with self._lock_for_agent(agent_id):
             existing = self.running_for_agent(agent_id)
             if existing is not None:
@@ -68,23 +81,25 @@ class RunManager:
                 message_id=message_id,
                 repo_alias=repo_alias,
                 repo_path=repo_path,
-                codex_session_id=codex_session_id,
+                codex_session_id=runtime_session_id,
                 prompt=prompt,
+                runtime=runtime,
             )
             self.state.touch_remote_agent(agent_id, status="running", last_run_id=run.id, last_error=None)
         try:
-            result = _normalize_result(await self.codex_runner.resume(
-                codex_session_id,
+            runner = self.runtime_registry.get(runtime)
+            result = _normalize_result(await runner.resume(
+                runtime_session_id,
                 repo_path,
                 prompt,
                 on_started=lambda pid: self.state.mark_run_running(run.id, pid),
             ))
         except Exception as exc:
-            result = CodexRunResult(session_id=codex_session_id, summary=f"Codex 执行异常：{exc}", status="failed")
-        cancelled = self._cancelled_result(run.id, codex_session_id)
+            result = RuntimeRunResult(session_id=runtime_session_id, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
+        cancelled = self._cancelled_result(run.id, runtime_session_id)
         if cancelled is not None:
             return cancelled
-        self._finish(run.id, result)
+        self._finish(run.id, result, runtime)
         self.state.touch_remote_agent(
             agent_id,
             status="idle" if result.status == "succeeded" else "failed",
@@ -101,10 +116,11 @@ class RunManager:
         message_id: str,
         repo_alias: str,
         repo_path: Path,
-        codex_session_id: str,
+        runtime_session_id: str,
         prompt: str,
         agent_id: str | None = None,
-    ) -> tuple[RunRecord, CodexRunResult]:
+        runtime: str = "codex",
+    ) -> tuple[RunRecord, RuntimeRunResult]:
         if agent_id:
             return await self.resume_agent(
                 agent_id=agent_id,
@@ -112,8 +128,9 @@ class RunManager:
                 message_id=message_id,
                 repo_alias=repo_alias,
                 repo_path=repo_path,
-                codex_session_id=codex_session_id,
+                runtime_session_id=runtime_session_id,
                 prompt=prompt,
+                runtime=runtime,
             )
         run = self.state.create_run(
             agent_id=None,
@@ -121,26 +138,34 @@ class RunManager:
             message_id=message_id,
             repo_alias=repo_alias,
             repo_path=repo_path,
-            codex_session_id=codex_session_id,
+            codex_session_id=runtime_session_id,
             prompt=prompt,
+            runtime=runtime,
         )
         try:
-            result = _normalize_result(await self.codex_runner.resume(
-                codex_session_id,
+            runner = self.runtime_registry.get(runtime)
+            result = _normalize_result(await runner.resume(
+                runtime_session_id,
                 repo_path,
                 prompt,
                 on_started=lambda pid: self.state.mark_run_running(run.id, pid),
             ))
         except Exception as exc:
-            result = CodexRunResult(session_id=codex_session_id, summary=f"Codex 执行异常：{exc}", status="failed")
-        cancelled = self._cancelled_result(run.id, codex_session_id)
+            result = RuntimeRunResult(session_id=runtime_session_id, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
+        cancelled = self._cancelled_result(run.id, runtime_session_id)
         if cancelled is not None:
             return cancelled
-        self._finish(run.id, result)
+        self._finish(run.id, result, runtime)
         return self.state.get_run(run.id) or run, result
 
-    def attach_run_to_agent(self, run_id: str, agent_id: str, codex_session_id: str | None = None) -> None:
-        self.state.attach_run_to_agent(run_id, agent_id, codex_session_id)
+    def attach_run_to_agent(
+        self,
+        run_id: str,
+        agent_id: str,
+        runtime_session_id: str | None = None,
+        runtime: str | None = None,
+    ) -> None:
+        self.state.attach_run_to_agent(run_id, agent_id, runtime_session_id, runtime)
         run = self.state.get_run(run_id)
         if run:
             self.state.touch_remote_agent(
@@ -161,17 +186,17 @@ class RunManager:
         self.state.touch_remote_agent(agent_id, status="idle", last_run_id=run.id, last_error="用户已取消任务。")
         return self.state.get_run(run.id) or run
 
-    def _finish(self, run_id: str, result: CodexRunResult) -> None:
+    def _finish(self, run_id: str, result: RuntimeRunResult, runtime: str) -> None:
         error = None if result.status == "succeeded" else result.summary
-        self.state.finish_run(run_id, result.status, summary=result.summary, error=error, codex_session_id=result.session_id)
+        self.state.finish_run(run_id, result.status, summary=result.summary, error=error, codex_session_id=result.session_id, runtime=runtime)
 
-    def _cancelled_result(self, run_id: str, codex_session_id: str | None) -> tuple[RunRecord, CodexRunResult] | None:
+    def _cancelled_result(self, run_id: str, runtime_session_id: str | None) -> tuple[RunRecord, RuntimeRunResult] | None:
         run = self.state.get_run(run_id)
         if run is None or run.status != "cancelled":
             return None
-        return run, CodexRunResult(
-            session_id=codex_session_id,
-            summary=f"任务 {run_id} 已取消，忽略后续 Codex 结果。",
+        return run, RuntimeRunResult(
+            session_id=runtime_session_id,
+            summary=f"任务 {run_id} 已取消，忽略后续 runtime 结果。",
             status="cancelled",
         )
 
@@ -200,11 +225,15 @@ def terminate_process_group(pid: int) -> None:
         os.kill(pid, signal.SIGTERM)
 
 
-def _normalize_result(result: Any) -> CodexRunResult:
-    if isinstance(result, CodexRunResult):
+def _normalize_result(result: Any) -> RuntimeRunResult:
+    if isinstance(result, RuntimeRunResult):
         return result
-    return CodexRunResult(
+    return RuntimeRunResult(
         session_id=result.get("session_id"),
         summary=result.get("summary", ""),
         status=result.get("status", "succeeded"),
     )
+
+
+def _runtime_label(runtime: str) -> str:
+    return "Codex" if runtime == "codex" else runtime

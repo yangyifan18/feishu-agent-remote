@@ -1,5 +1,6 @@
 owner_open_id: ou_xxxxxxxxxxxxxxxx
 default_repo: agent
+default_runtime: codex
 
 repos:
   agent: /Users/you/Code/feishu-agent-remote
@@ -9,9 +10,17 @@ repos:
 authorized_open_ids:
   - ou_xxxxxxxxxxxxxxxx
 
-codex_bin: codex
-codex_profile: null
 lark_cli_bin: lark-cli
-default_sandbox: workspace-write
 bot_names:
   - your-bot-name
+
+runtimes:
+  codex:
+    type: codex
+    bin: codex
+    profile: null
+    sandbox: workspace-write
+  claude:
+    type: claude
+    bin: claude
+    permission_mode: acceptEdits

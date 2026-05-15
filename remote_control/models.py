@@ -9,6 +9,18 @@ class RepoConfig:
 
 
 @dataclass(frozen=True)
+class RuntimeConfig:
+    name: str
+    type: str
+    bin: str
+    profile: str | None = None
+    sandbox: str | None = None
+    permission_mode: str | None = None
+    model: str | None = None
+    extra_args: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RemoteConfig:
     owner_open_id: str
     authorized_open_ids: frozenset[str]
@@ -20,6 +32,8 @@ class RemoteConfig:
     default_sandbox: str = "workspace-write"
     bot_names: tuple[str, ...] = ("your-bot-name",)
     config_path: Path | None = None
+    default_runtime: str = "codex"
+    runtimes: dict[str, RuntimeConfig] | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,12 @@ class SessionBinding:
     title: str | None = None
     last_run_id: str | None = None
     last_error: str | None = None
+    runtime: str = "codex"
+    runtime_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.runtime_session_id is None:
+            object.__setattr__(self, "runtime_session_id", self.codex_session_id)
 
 
 @dataclass(frozen=True)
@@ -69,6 +89,9 @@ class CodexRunResult:
     status: str = "succeeded"
 
 
+RuntimeRunResult = CodexRunResult
+
+
 @dataclass(frozen=True)
 class CodexSessionMeta:
     session_id: str
@@ -76,6 +99,10 @@ class CodexSessionMeta:
     timestamp: str
     source: str
     path: Path
+    runtime: str = "codex"
+
+
+RuntimeSessionMeta = CodexSessionMeta
 
 
 @dataclass(frozen=True)
@@ -92,6 +119,12 @@ class RemoteAgent:
     updated_at: str
     last_run_id: str | None = None
     last_error: str | None = None
+    runtime: str = "codex"
+    runtime_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.runtime_session_id is None:
+            object.__setattr__(self, "runtime_session_id", self.codex_session_id)
 
 
 @dataclass(frozen=True)
@@ -111,3 +144,9 @@ class RunRecord:
     created_at: str
     started_at: str | None
     finished_at: str | None
+    runtime: str = "codex"
+    runtime_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.runtime_session_id is None:
+            object.__setattr__(self, "runtime_session_id", self.codex_session_id)

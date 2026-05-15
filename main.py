@@ -4,11 +4,11 @@ import logging
 from typing import Any
 
 from config import FAR_CONFIG, FAR_STATE
-from remote_control.codex_runner import CodexRunner
 from remote_control.config import load_config
 from remote_control.lark_gateway import LarkGateway
 from remote_control.models import IncomingMessage
 from remote_control.router import RemoteRouter
+from remote_control.runtimes import build_runtime_registry
 from remote_control.state import StateStore
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +20,7 @@ lark_gateway = LarkGateway(remote_config.lark_cli_bin)
 router = RemoteRouter(
     remote_config,
     state,
-    CodexRunner(remote_config.codex_bin, remote_config.default_sandbox, profile=remote_config.codex_profile),
+    build_runtime_registry(remote_config),
     lark_gateway,
 )
 

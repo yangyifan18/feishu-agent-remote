@@ -7,10 +7,13 @@ from pathlib import Path
 
 from remote_control.codex_runner import parse_codex_jsonl
 from remote_control.codex_runner import CodexRunner
+from remote_control.claude_runner import ClaudeRunner, parse_claude_stream_json
 from remote_control.config import load_config
 from remote_control.models import CodexSessionMeta
 from remote_control.models import IncomingMessage
 from remote_control.router import RemoteRouter
+from remote_control.runtimes import RuntimeRegistry
+from remote_control.session_finder import RuntimeSessionFinder
 from remote_control.state import StateStore
 
 
@@ -29,6 +32,20 @@ class FakeCodexRunner:
         if on_started:
             on_started(12345)
         return {"session_id": session_id, "summary": "continued work", "status": "succeeded"}
+
+
+class FakeClaudeRunner(FakeCodexRunner):
+    async def start(self, repo_path, prompt, on_started=None):
+        self.calls.append(("start", str(repo_path), prompt))
+        if on_started:
+            on_started(23456)
+        return {"session_id": "claude-new", "summary": "claude started", "status": "succeeded"}
+
+    async def resume(self, session_id, repo_path, prompt, on_started=None):
+        self.calls.append(("resume", session_id, str(repo_path), prompt))
+        if on_started:
+            on_started(23456)
+        return {"session_id": session_id, "summary": "claude continued", "status": "succeeded"}
 
 
 class FailingCodexRunner(FakeCodexRunner):
@@ -114,6 +131,37 @@ class FakeSessionFinder:
         return self.sessions[:limit]
 
 
+class FakeMultiSessionFinder:
+    def __init__(self):
+        self.calls = []
+        self.sessions = {
+            "codex": [
+                CodexSessionMeta(
+                    session_id="019e-existing",
+                    cwd=Path("/tmp/agent"),
+                    timestamp="2026-05-12T03:00:00Z",
+                    source="exec",
+                    path=Path("/tmp/codex.jsonl"),
+                    runtime="codex",
+                )
+            ],
+            "claude": [
+                CodexSessionMeta(
+                    session_id="claude-existing",
+                    cwd=Path("/tmp/agent"),
+                    timestamp="2026-05-12T04:00:00Z",
+                    source="transcript",
+                    path=Path("/tmp/claude.jsonl"),
+                    runtime="claude",
+                )
+            ],
+        }
+
+    def recent(self, limit=10, runtime="codex"):
+        self.calls.append((runtime, limit))
+        return self.sessions.get(runtime, [])[:limit]
+
+
 def message(text, sender="ou_owner", chat="oc_chat", message_id="om_msg"):
     return IncomingMessage(
         message_id=message_id,
@@ -166,11 +214,52 @@ class RemoteControlTests(unittest.TestCase):
             config = load_config(config_path)
 
             self.assertEqual(config.codex_profile, "fastrelay")
+            self.assertEqual(config.default_runtime, "codex")
+            self.assertEqual(config.runtimes["codex"].profile, "fastrelay")
+
+    def test_load_config_reads_multi_runtime_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "owner_open_id: ou_owner",
+                        "default_repo: agent",
+                        "default_runtime: claude",
+                        "repos:",
+                        "  agent: /tmp/agent",
+                        "runtimes:",
+                        "  codex:",
+                        "    type: codex",
+                        "    bin: codex",
+                        "    profile: fastrelay",
+                        "  claude:",
+                        "    type: claude",
+                        "    bin: claude",
+                        "    permission_mode: acceptEdits",
+                    ]
+                )
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.default_runtime, "claude")
+            self.assertEqual(config.runtimes["codex"].profile, "fastrelay")
+            self.assertEqual(config.runtimes["claude"].type, "claude")
+            self.assertEqual(config.runtimes["claude"].permission_mode, "acceptEdits")
 
     def test_codex_runner_puts_profile_before_exec_command(self):
         runner = CodexRunner(profile="fastrelay")
 
         self.assertEqual(runner._base_argv(), ["codex", "--profile", "fastrelay"])
+
+    def test_claude_runner_uses_verbose_stream_json(self):
+        runner = ClaudeRunner(permission_mode="acceptEdits")
+
+        self.assertEqual(
+            runner._argv("hello"),
+            ["claude", "-p", "hello", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"],
+        )
 
     def test_load_config_expands_tilde_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,6 +336,29 @@ class RemoteControlTests(unittest.TestCase):
         self.assertEqual(parsed.session_id, "019e-thread")
         self.assertEqual(parsed.last_message, "remote smoke ok")
 
+    def test_parse_claude_stream_json_extracts_session_and_last_message(self):
+        raw = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "session_id": "claude-session",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "working"},
+                            ]
+                        },
+                    }
+                ),
+                json.dumps({"type": "result", "session_id": "claude-session", "result": "done"}),
+            ]
+        )
+
+        parsed = parse_claude_stream_json(raw)
+
+        self.assertEqual(parsed.session_id, "claude-session")
+        self.assertEqual(parsed.last_message, "done")
+
     def test_unauthorized_sender_does_not_start_codex(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:
@@ -272,6 +384,37 @@ class RemoteControlTests(unittest.TestCase):
                     "codex-new",
                 )
                 self.assertEqual(router.state.list_remote_agents()[0].title, "agent-console")
+
+        asyncio.run(run())
+
+    def test_new_session_can_select_claude_runtime(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                await router.handle(message("/new runtime=claude agent claude-helper fix it"))
+
+                self.assertEqual(runners["codex"].calls, [])
+                self.assertEqual(runners["claude"].calls[0], ("start", "/tmp/agent", "fix it"))
+                binding = router.state.get_session("oc_chat", "chat:oc_chat")
+                self.assertEqual(binding.runtime, "claude")
+                self.assertEqual(binding.runtime_session_id, "claude-new")
+                self.assertEqual(binding.codex_session_id, "claude-new")
+                agent = router.state.list_remote_agents()[0]
+                self.assertEqual(agent.runtime, "claude")
+                self.assertIn("claude started", lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_plain_message_resumes_selected_runtime(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                await router.handle(message("/new runtime=claude agent claude-helper fix it", message_id="om_new"))
+                await router.handle(message("continue", message_id="om_followup"))
+
+                self.assertEqual(runners["claude"].calls[-1], ("resume", "claude-new", "/tmp/agent", "continue"))
+                self.assertEqual(runners["codex"].calls, [])
+                self.assertIn("claude continued", lark.replies[-1][1])
 
         asyncio.run(run())
 
@@ -387,6 +530,58 @@ class RemoteControlTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_runtime_sessions_can_list_claude_sessions(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                await router.handle(message("/runtime-sessions claude"))
+
+                self.assertEqual(runners["codex"].calls, [])
+                self.assertEqual(runners["claude"].calls, [])
+                self.assertIn("claude-existing", lark.replies[-1][1])
+                self.assertIn("runtime=claude", lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_runtime_session_finder_reads_claude_project_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = Path(tmp) / "projects"
+            transcripts = Path(tmp) / "transcripts"
+            session_dir = projects / "-tmp-agent"
+            session_dir.mkdir(parents=True)
+            transcripts.mkdir()
+            session_file = session_dir / "claude-session.jsonl"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": "claude-session",
+                        "cwd": "/tmp/agent",
+                        "timestamp": "2026-05-15T06:00:00Z",
+                    }
+                )
+                + "\n"
+            )
+
+            sessions = RuntimeSessionFinder(
+                claude_projects_root=projects,
+                claude_transcripts_root=transcripts,
+            ).recent(runtime="claude")
+
+            self.assertEqual(sessions[0].session_id, "claude-session")
+            self.assertEqual(sessions[0].cwd, Path("/tmp/agent"))
+
+    def test_runtimes_lists_configured_runtime_availability(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                await router.handle(message("/runtimes"))
+
+                self.assertIn("codex", lark.replies[-1][1])
+                self.assertIn("claude", lark.replies[-1][1])
+
+        asyncio.run(run())
+
     def test_attach_binds_existing_codex_session_to_current_thread(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:
@@ -398,6 +593,21 @@ class RemoteControlTests(unittest.TestCase):
                 self.assertEqual(binding.repo_alias, "agent")
                 self.assertEqual(runner.calls, [])
                 self.assertIn("已绑定", lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_attach_can_import_claude_runtime_session(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                await router.handle(message("/attach runtime=claude repo=agent claude-existing"))
+
+                binding = router.state.get_session("oc_chat", "chat:oc_chat")
+                self.assertEqual(binding.runtime, "claude")
+                self.assertEqual(binding.runtime_session_id, "claude-existing")
+                self.assertEqual(binding.repo_alias, "agent")
+                self.assertEqual(runners["claude"].calls, [])
+                self.assertIn("runtime=claude", lark.replies[-1][1])
 
         asyncio.run(run())
 
@@ -569,6 +779,44 @@ class RemoteControlTests(unittest.TestCase):
 
             self.assertEqual(reopened.get_run(run.id).summary, "done")
             self.assertEqual(reopened.list_runs(agent_id="rc_test")[0].id, run.id)
+
+    def test_state_persists_runtime_fields_and_keeps_codex_compat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = StateStore(Path(tmp) / "state.sqlite")
+            agent = state.create_remote_agent(
+                "claude-helper",
+                "agent",
+                Path("/tmp/agent"),
+                "claude-session",
+                "oc_chat",
+                "chat:oc_chat",
+                runtime="claude",
+            )
+            state.upsert_session(
+                "oc_chat",
+                "chat:oc_chat",
+                "agent",
+                Path("/tmp/agent"),
+                "claude-session",
+                agent_id=agent.id,
+                runtime="claude",
+            )
+            run = state.create_run(
+                agent_id=agent.id,
+                chat_id="oc_chat",
+                message_id="om_run",
+                repo_alias="agent",
+                repo_path=Path("/tmp/agent"),
+                codex_session_id="claude-session",
+                prompt="persist runtime",
+                runtime="claude",
+            )
+
+            reopened = StateStore(Path(tmp) / "state.sqlite")
+
+            self.assertEqual(reopened.get_remote_agent(agent.id).runtime, "claude")
+            self.assertEqual(reopened.get_session("oc_chat", "chat:oc_chat").runtime, "claude")
+            self.assertEqual(reopened.get_run(run.id).runtime, "claude")
 
     def test_cancel_reports_no_running_run_for_idle_agent(self):
         async def run():
@@ -816,6 +1064,37 @@ def make_router(tmp):
     runner = FakeCodexRunner()
     lark = FakeLarkGateway()
     return RemoteRouter(config, state, runner, lark, FakeSessionFinder()), runner, lark
+
+
+def make_multi_runtime_router(tmp):
+    config_path = Path(tmp) / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "owner_open_id: ou_owner",
+                "default_repo: agent",
+                "default_runtime: codex",
+                "repos:",
+                "  agent: /tmp/agent",
+                "authorized_open_ids:",
+                "  - ou_owner",
+                "runtimes:",
+                "  codex:",
+                "    type: codex",
+                "    bin: codex",
+                "  claude:",
+                "    type: claude",
+                "    bin: claude",
+                "    permission_mode: acceptEdits",
+            ]
+        )
+    )
+    config = load_config(config_path)
+    state = StateStore(Path(tmp) / "state.sqlite")
+    runners = {"codex": FakeCodexRunner(), "claude": FakeClaudeRunner()}
+    lark = FakeLarkGateway()
+    registry = RuntimeRegistry(runners, default_runtime=config.default_runtime, configs=config.runtimes)
+    return RemoteRouter(config, state, registry, lark, FakeMultiSessionFinder()), runners, lark
 
 
 if __name__ == "__main__":
