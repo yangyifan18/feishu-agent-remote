@@ -35,7 +35,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 ## 🧩 亮点
 
 - **飞书优先的远程控制**：私聊或群聊 @ bot 都能驱动本机 Agent 工作。
-- **线上专员**：用 `/new` 创建具名远程 Agent，用 `/remote-codex` 查看，用 `/attach` 切换。
+- **线上专员**：用 `/new` 创建具名远程 Agent，用 `/agents` 查看，用 `/attach` 切换。
 - **持久 Codex session**：普通后续消息会恢复当前绑定 session，而不是每次重新开始。
 - **Repo 白名单**：只允许访问配置过的仓库。
 - **默认 owner-only**：未授权用户的命令会被忽略。
@@ -190,23 +190,28 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 
 | 命令 | 作用 |
 | --- | --- |
-| `/new repo=<alias> title=<title> [task]` | 创建新的线上专员，并绑定到当前聊天上下文。 |
-| `/new <alias> <title> [task]` | `/new` 的简写形式。 |
-| 普通文本 | 继续当前绑定的 Codex session。 |
-| `/status` | 查看当前线上专员、agent id、repo、Codex session id、状态和待确认事项。 |
-| `/remote-codex [n]` | 列出由这个 bot 创建或接管的线上专员。 |
-| `/attach <agent_id>` | 把当前聊天上下文切换到已有线上专员。 |
-| `/attach repo=<alias> <codex_session_id>` | 把已有本机 Codex session 接管为线上专员。 |
-| `/remove <agent_id> [agent_id ...]` | 删除一个或多个线上专员，并清除相关聊天绑定。 |
-| `/recent-codex [n]` | 扫描本机 `~/.codex/sessions` 中最近的 Codex session。 |
-| `/summarize repo=<alias> <codex_session_id>` | 让某个 Codex session 总结进度。 |
-| `/repo` | 列出已配置的 repo alias。 |
-| `/repo <alias>` | 切换当前绑定 session 的 repo alias。 |
-| `/sessions` | 查看已保存的本地聊天-session 绑定。 |
-| `/close` | 关闭当前聊天绑定，但不删除线上专员。 |
+| `/help` | 查看核心命令和当前上下文提示。 |
+| `/status` | 查看当前线上专员、repo、状态、最近任务和待确认事项。 |
+| `/new <repo> <title> [task]` | 创建新的线上专员；省略 `task` 时进入待命模式。 |
+| 普通文本 | 继续当前绑定专员的 Codex session。 |
+| `/agents [n]` | 列出线上专员；当前绑定会用 `*` 标记。 |
+| `/attach <agent_id>` | 将当前聊天上下文切换到已有线上专员。 |
+| `/detach` | 解除当前聊天绑定，但不删除线上专员。 |
+| `/remove <agent_id> [agent_id ...]` | 删除一个或多个线上专员，并清除相关绑定。 |
+| `/rename <agent_id> <title>` | 重命名线上专员。 |
+| `/runs [agent_id] [n]` | 查看当前专员、指定专员或全局最近任务记录。 |
+| `/cancel [agent_id]` | 取消运行中的任务；默认使用当前专员。 |
+| `/repos` | 列出已配置的 repo alias。 |
+| `/switch-repo <alias>` | 切换当前线上专员的 repo alias。 |
+| `/codex-sessions [n]` | 扫描本机 `~/.codex/sessions` 中最近的 Codex session。 |
+| `/handoff [agent_id]` | 让线上专员生成结构化进度交接。 |
+| `/pending` | 查看待确认操作。 |
 | `/send <open_id> <text>` | 准备一条 user 身份消息，并创建确认单。 |
 | `/approve <id>` | 批准并执行待确认操作。 |
 | `/reject <id>` | 拒绝待确认操作。 |
+| `/doctor` | 检查本机 `lark-cli`、Codex、配置、repo 和 state 连接。 |
+
+兼容 alias 仍可用：`/remote-codex` → `/agents`，`/recent-codex` → `/codex-sessions`，`/close` → `/detach`，`/repo` → `/repos` 或 `/switch-repo`，`/summarize` → `/handoff`。
 
 ## 💬 示例流程
 
@@ -217,7 +222,7 @@ Bot：已绑定 `agent-console`。Agent ID：rc_ab12cd34 ...
 你：总结一下当前 repo 的进展，不要修改文件
 Bot：当前目标是 ... 已完成 ... 下一步建议 ...
 
-你：/remote-codex 5
+你：/agents 5
 Bot：* rc_ab12cd34 `agent-console` repo=agent session=019e...
 
 你：/new app bug-hunter 检查最近失败的测试
@@ -277,10 +282,7 @@ Feishu Agent Remote 默认偏保守。
 
 ## 🗺️ Roadmap
 
-- 将 bot 触发词完全配置化。
-- 增加线上专员 `/rename`。
 - 增加不 resume Codex 的只读 session inspection。
-- 增加 `/cancel` 终止长时间运行的 Codex 子进程。
 - 增加 launchd installer/uninstaller。
 - 支持 Codex 之外的更多本机 Agent CLI。
 - 增加可选的 session history web dashboard。

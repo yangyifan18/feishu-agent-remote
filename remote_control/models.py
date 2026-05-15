@@ -19,6 +19,7 @@ class RemoteConfig:
     lark_cli_bin: str = "lark-cli"
     default_sandbox: str = "workspace-write"
     bot_names: tuple[str, ...] = ("your-bot-name",)
+    config_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,8 @@ class SessionBinding:
     status: str
     agent_id: str | None = None
     title: str | None = None
+    last_run_id: str | None = None
+    last_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class Confirmation:
 class CodexRunResult:
     session_id: str | None
     summary: str
+    status: str = "succeeded"
 
 
 @dataclass(frozen=True)
@@ -86,3 +90,24 @@ class RemoteAgent:
     thread_key: str
     created_at: str
     updated_at: str
+    last_run_id: str | None = None
+    last_error: str | None = None
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    id: str
+    agent_id: str | None
+    chat_id: str
+    message_id: str
+    repo_alias: str
+    repo_path: Path
+    codex_session_id: str | None
+    prompt: str
+    status: str
+    pid: int | None
+    summary: str | None
+    error: str | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None

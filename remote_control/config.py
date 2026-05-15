@@ -8,7 +8,8 @@ DEFAULT_CONFIG_PATH = Path("~/.feishu-agent-remote/config.yaml").expanduser()
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
-    raw = _read_yaml_subset(Path(path).expanduser())
+    config_path = Path(path).expanduser()
+    raw = _read_yaml_subset(config_path)
     owner = str(raw.get("owner_open_id", "")).strip()
     if not owner:
         raise ValueError("config requires owner_open_id")
@@ -43,6 +44,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
         lark_cli_bin=str(raw.get("lark_cli_bin", "lark-cli")),
         default_sandbox=str(raw.get("default_sandbox", "workspace-write")),
         bot_names=tuple(str(name) for name in raw.get("bot_names", ["your-bot-name"])),
+        config_path=config_path,
     )
 
 

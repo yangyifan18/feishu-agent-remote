@@ -35,7 +35,7 @@ Feishu Agent Remote turns that flow into a chat-native command console.
 ## 🧩 Highlights
 
 - **Feishu-first remote control**: private chat or configured group mentions can drive local work.
-- **Online helpers**: create named remote agents with `/new`, list them with `/remote-codex`, switch with `/attach`.
+- **Online helpers**: create named remote agents with `/new`, list them with `/agents`, switch with `/attach`.
 - **Persistent Codex sessions**: follow-up messages resume the bound local Codex session instead of starting over.
 - **Repo allowlist**: only configured repositories can be accessed.
 - **Owner-only by default**: ignore commands from unauthorized users.
@@ -190,23 +190,28 @@ Then fill in, without committing secrets:
 
 | Command | What it does |
 | --- | --- |
-| `/new repo=<alias> title=<title> [task]` | Create a new online helper and bind it to the current chat context. |
-| `/new <alias> <title> [task]` | Shorthand form of `/new`. |
-| plain text | Continue the currently bound Codex session. |
-| `/status` | Show the current helper, agent id, repo, Codex session id, status, and pending confirmations. |
-| `/remote-codex [n]` | List online helpers created or imported by this bot. |
+| `/help` | Show core commands and context-aware next steps. |
+| `/status` | Show the current online helper, repo, status, latest run, and pending confirmations. |
+| `/new <repo> <title> [task]` | Create a new online helper; if `task` is omitted, it starts in standby mode. |
+| plain text | Continue the currently bound helper's Codex session. |
+| `/agents [n]` | List online helpers; the current binding is marked with `*`. |
 | `/attach <agent_id>` | Switch the current chat context to an existing online helper. |
-| `/attach repo=<alias> <codex_session_id>` | Import an existing local Codex session as an online helper. |
-| `/remove <agent_id> [agent_id ...]` | Delete one or more online helpers and clear their chat bindings. |
-| `/recent-codex [n]` | Scan local `~/.codex/sessions` for recent Codex sessions. |
-| `/summarize repo=<alias> <codex_session_id>` | Ask a Codex session to summarize progress. |
-| `/repo` | List configured repository aliases. |
-| `/repo <alias>` | Switch the repo alias for the current bound session. |
-| `/sessions` | List stored local chat-session bindings. |
-| `/close` | Close the current chat binding without deleting the helper. |
+| `/detach` | Clear the current chat binding without deleting the helper. |
+| `/remove <agent_id> [agent_id ...]` | Delete one or more online helpers and clear related bindings. |
+| `/rename <agent_id> <title>` | Rename an online helper. |
+| `/runs [agent_id] [n]` | Show recent task runs for the current helper, a specific helper, or all helpers. |
+| `/cancel [agent_id]` | Cancel a running task; defaults to the current helper. |
+| `/repos` | List configured repository aliases. |
+| `/switch-repo <alias>` | Switch the current helper's repo alias. |
+| `/codex-sessions [n]` | Scan local `~/.codex/sessions` for recent Codex sessions. |
+| `/handoff [agent_id]` | Ask a helper to produce a structured progress handoff. |
+| `/pending` | List pending approval-gated operations. |
 | `/send <open_id> <text>` | Prepare a user-identity message and create a confirmation. |
 | `/approve <id>` | Approve and execute a pending confirmation. |
 | `/reject <id>` | Reject a pending confirmation. |
+| `/doctor` | Check local `lark-cli`, Codex, config, repos, and state wiring. |
+
+Compatibility aliases remain available: `/remote-codex` → `/agents`, `/recent-codex` → `/codex-sessions`, `/close` → `/detach`, `/repo` → `/repos` or `/switch-repo`, and `/summarize` → `/handoff`.
 
 ## 💬 Example Flow
 
@@ -217,7 +222,7 @@ Bot: 已绑定 `agent-console`。Agent ID：rc_ab12cd34 ...
 You: Summarize current repo progress. Do not modify files.
 Bot: Current goal ... completed work ... next steps ...
 
-You: /remote-codex 5
+You: /agents 5
 Bot: * rc_ab12cd34 `agent-console` repo=agent session=019e...
 
 You: /new app bug-hunter Check recently failing tests
@@ -277,10 +282,7 @@ Current test coverage includes:
 
 ## 🗺️ Roadmap
 
-- Rename hardcoded bot trigger text into config.
-- Add `/rename` for online helpers.
 - Add pure read-only session inspection without resuming Codex.
-- Add `/cancel` for long-running Codex subprocesses.
 - Add first-class launchd installer/uninstaller.
 - Support more local agent CLIs beyond Codex.
 - Add optional web dashboard for session history.
