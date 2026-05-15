@@ -44,6 +44,8 @@ class StateStore:
                 """
             )
             self._ensure_column(conn, "sessions", "agent_id", "TEXT")
+            self._ensure_column(conn, "sessions", "runtime", "TEXT DEFAULT 'codex'")
+            self._ensure_column(conn, "sessions", "runtime_session_id", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS confirmations (
@@ -77,6 +79,8 @@ class StateStore:
             )
             self._ensure_column(conn, "remote_agents", "last_run_id", "TEXT")
             self._ensure_column(conn, "remote_agents", "last_error", "TEXT")
+            self._ensure_column(conn, "remote_agents", "runtime", "TEXT DEFAULT 'codex'")
+            self._ensure_column(conn, "remote_agents", "runtime_session_id", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -98,6 +102,8 @@ class StateStore:
                 )
                 """
             )
+            self._ensure_column(conn, "runs", "runtime", "TEXT DEFAULT 'codex'")
+            self._ensure_column(conn, "runs", "runtime_session_id", "TEXT")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -113,21 +119,28 @@ class StateStore:
         codex_session_id: str,
         status: str = "idle",
         agent_id: str | None = None,
+        runtime: str = "codex",
     ) -> None:
+        runtime_session_id = codex_session_id
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions (chat_id, thread_key, agent_id, repo_alias, repo_path, codex_session_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                    chat_id, thread_key, agent_id, repo_alias, repo_path, codex_session_id,
+                    runtime, runtime_session_id, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, thread_key) DO UPDATE SET
                     agent_id=excluded.agent_id,
                     repo_alias=excluded.repo_alias,
                     repo_path=excluded.repo_path,
                     codex_session_id=excluded.codex_session_id,
+                    runtime=excluded.runtime,
+                    runtime_session_id=excluded.runtime_session_id,
                     status=excluded.status,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (chat_id, thread_key, agent_id, repo_alias, str(repo_path), codex_session_id, status),
+                (chat_id, thread_key, agent_id, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status),
             )
 
     def get_session(self, chat_id: str, thread_key: str) -> SessionBinding | None:
@@ -173,6 +186,8 @@ class StateStore:
             title=row["agent_title"],
             last_run_id=row["agent_last_run_id"],
             last_error=row["agent_last_error"],
+            runtime=_row_value(row, "runtime", "codex") or "codex",
+            runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
         )
 
     def create_remote_agent(
@@ -184,15 +199,20 @@ class StateStore:
         chat_id: str,
         thread_key: str,
         status: str = "idle",
+        runtime: str = "codex",
     ) -> RemoteAgent:
+        runtime_session_id = codex_session_id
         agent_id = "rc_" + uuid.uuid4().hex[:8]
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO remote_agents (id, title, repo_alias, repo_path, codex_session_id, status, chat_id, thread_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO remote_agents (
+                    id, title, repo_alias, repo_path, codex_session_id, runtime,
+                    runtime_session_id, status, chat_id, thread_key
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (agent_id, title, repo_alias, str(repo_path), codex_session_id, status, chat_id, thread_key),
+                (agent_id, title, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status, chat_id, thread_key),
             )
         agent = self.get_remote_agent(agent_id)
         if agent is None:
@@ -281,11 +301,18 @@ class StateStore:
                 (repo_alias, str(repo_path), agent_id),
             )
 
-    def update_remote_agent_session(self, agent_id: str, codex_session_id: str) -> None:
+    def update_remote_agent_session(self, agent_id: str, codex_session_id: str, runtime: str | None = None) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE remote_agents SET codex_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (codex_session_id, agent_id),
+                """
+                UPDATE remote_agents
+                SET codex_session_id = ?,
+                    runtime = COALESCE(?, runtime),
+                    runtime_session_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (codex_session_id, runtime, codex_session_id, agent_id),
             )
 
     def _row_to_remote_agent(self, row: sqlite3.Row | None) -> RemoteAgent | None:
@@ -304,6 +331,8 @@ class StateStore:
             updated_at=row["updated_at"],
             last_run_id=row["last_run_id"],
             last_error=row["last_error"],
+            runtime=_row_value(row, "runtime", "codex") or "codex",
+            runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
         )
 
     def close_session(self, chat_id: str, thread_key: str) -> None:
@@ -321,13 +350,18 @@ class StateStore:
         codex_session_id: str | None,
         prompt: str,
         status: str = "queued",
+        runtime: str = "codex",
     ) -> RunRecord:
+        runtime_session_id = codex_session_id
         run_id = "run_" + uuid.uuid4().hex[:8]
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO runs (id, agent_id, chat_id, message_id, repo_alias, repo_path, codex_session_id, prompt, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO runs (
+                    id, agent_id, chat_id, message_id, repo_alias, repo_path,
+                    codex_session_id, runtime, runtime_session_id, prompt, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -337,6 +371,8 @@ class StateStore:
                     repo_alias,
                     str(repo_path),
                     codex_session_id,
+                    runtime,
+                    runtime_session_id,
                     _redact_secrets(prompt),
                     status,
                 ),
@@ -346,15 +382,24 @@ class StateStore:
             raise RuntimeError("failed to create run")
         return run
 
-    def attach_run_to_agent(self, run_id: str, agent_id: str, codex_session_id: str | None = None) -> None:
+    def attach_run_to_agent(
+        self,
+        run_id: str,
+        agent_id: str,
+        codex_session_id: str | None = None,
+        runtime: str | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE runs
-                SET agent_id = ?, codex_session_id = COALESCE(?, codex_session_id)
+                SET agent_id = ?,
+                    codex_session_id = COALESCE(?, codex_session_id),
+                    runtime = COALESCE(?, runtime),
+                    runtime_session_id = COALESCE(?, runtime_session_id)
                 WHERE id = ?
                 """,
-                (agent_id, codex_session_id, run_id),
+                (agent_id, codex_session_id, runtime, codex_session_id, run_id),
             )
 
     def mark_run_running(self, run_id: str, pid: int | None) -> None:
@@ -375,6 +420,7 @@ class StateStore:
         summary: str | None = None,
         error: str | None = None,
         codex_session_id: str | None = None,
+        runtime: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -384,10 +430,12 @@ class StateStore:
                     summary = ?,
                     error = ?,
                     codex_session_id = COALESCE(?, codex_session_id),
+                    runtime = COALESCE(?, runtime),
+                    runtime_session_id = COALESCE(?, runtime_session_id),
                     finished_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (status, summary, error, codex_session_id, run_id),
+                (status, summary, error, codex_session_id, runtime, codex_session_id, run_id),
             )
 
     def get_run(self, run_id: str) -> RunRecord | None:
@@ -443,6 +491,8 @@ class StateStore:
             created_at=row["created_at"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+            runtime=_row_value(row, "runtime", "codex") or "codex",
+            runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
         )
 
     def create_confirmation(
@@ -532,3 +582,7 @@ def _redact_secrets(text: str) -> str:
         else:
             redacted = pattern.sub("[REDACTED]", redacted)
     return redacted
+
+
+def _row_value(row: sqlite3.Row, key: str, default: str | None = None) -> str | None:
+    return row[key] if key in row.keys() else default

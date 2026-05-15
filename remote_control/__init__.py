@@ -1,2 +1,1 @@
-"""Remote-control bridge between Feishu messages and local Codex sessions."""
-
+"""Remote-control bridge between Feishu messages and local agent runtimes."""

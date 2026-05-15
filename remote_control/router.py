@@ -3,7 +3,7 @@ from typing import Any
 from .commands import parse_command
 from .handlers import CommandHandlers
 from .models import IncomingMessage, RemoteConfig
-from .session_finder import CodexSessionFinder
+from .session_finder import RuntimeSessionFinder
 from .state import StateStore
 
 
@@ -26,7 +26,7 @@ class RemoteRouter:
             state,
             codex_runner,
             lark_gateway,
-            session_finder or CodexSessionFinder(),
+            session_finder or RuntimeSessionFinder(),
         )
 
     async def handle(self, msg: IncomingMessage) -> None:
@@ -53,7 +53,7 @@ class RemoteRouter:
             "bindings": self.handlers._bindings,
             "agents": self.handlers._agents,
             "remove": self.handlers._remove,
-            "codex-sessions": self.handlers._codex_sessions,
+            "runtime-sessions": self.handlers._runtime_sessions,
             "attach": self.handlers._attach,
             "handoff": self.handlers._handoff,
             "detach": self.handlers._detach,
@@ -66,6 +66,7 @@ class RemoteRouter:
             "rename": self.handlers._rename,
             "runs": self.handlers._runs,
             "cancel": self.handlers._cancel,
+            "runtimes": self.handlers._runtimes,
             "doctor": self.handlers._doctor,
         }
         handler = handlers.get(command.name)

@@ -4,7 +4,7 @@
 
 > 飞书线上专员：把你的本机 AI 编程 Agent 放进飞书，随时从手机上开工、切换上下文、汇报进度。
 
-Feishu Agent Remote 是一个轻量的本机 Agent 远程控制层。它监听飞书/Lark 消息，把聊天指令映射到本机 repo 和持久化 Codex session，然后像一个随时在线的协作伙伴一样在飞书里回复你。
+Feishu Agent Remote 是一个轻量的本机 Agent 远程控制层。它监听飞书/Lark 消息，把聊天指令映射到本机 repo 和持久化本机 Agent session，然后像一个随时在线的协作伙伴一样在飞书里回复你。
 
 ```text
 💬 飞书 / Lark 聊天
@@ -13,7 +13,7 @@ Feishu Agent Remote 是一个轻量的本机 Agent 远程控制层。它监听�
       ↓
 🧭 Feishu Agent Remote
       ↓
-🧑‍💻 本机 Codex sessions + repo 白名单
+🧑‍💻 本机 Codex / Claude sessions + repo 白名单
       ↓
 📣 回复 / 汇报 / 可选的 user 身份发送
 ```
@@ -25,7 +25,7 @@ Feishu Agent Remote 是一个轻量的本机 Agent 远程控制层。它监听�
 你可能正在手机上、在飞书群里，想要：
 
 - 让 Agent 继续某个 repo 的工作；
-- 给一个任务创建全新的隔离 Codex session；
+- 给一个任务创建全新的隔离 Codex 或 Claude session；
 - 查看远程编程助手当前在做什么；
 - 让它总结进度并同步给自己或团队；
 - 以自己的身份发一条消息，但必须先经过确认。
@@ -36,7 +36,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 
 - **飞书优先的远程控制**：私聊或群聊 @ bot 都能驱动本机 Agent 工作。
 - **线上专员**：用 `/new` 创建具名远程 Agent，用 `/agents` 查看，用 `/attach` 切换。
-- **持久 Codex session**：普通后续消息会恢复当前绑定 session，而不是每次重新开始。
+- **持久 runtime session**：普通后续消息会恢复当前绑定的 Codex 或 Claude session，而不是每次重新开始。
 - **Repo 白名单**：只允许访问配置过的仓库。
 - **默认 owner-only**：未授权用户的命令会被忽略。
 - **高影响操作确认**：`/send` 只创建确认单，`/approve` 后才会以 user 身份发送。
@@ -51,7 +51,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 
 - 飞书/Lark 事件输入：`lark-cli event consume im.message.receive_v1 --as bot`
 - 飞书/Lark 回复：`lark-cli im +messages-reply --as bot`
-- 本机 Agent runtime：`codex exec` / `codex resume`
+- 本机 Agent runtime：Codex CLI 和 Claude Code CLI
 - 状态存储：SQLite
 - 配置文件：本地 YAML 风格配置
 
@@ -64,7 +64,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 你需要：
 
 - 官方 `lark-cli`：https://github.com/larksuite/cli
-- 本机可正常运行的 Codex CLI
+- 本机可正常运行的 Codex CLI；如需 `runtime=claude`，还需要 Claude Code CLI
 - 一个已开启消息事件权限的飞书/Lark bot 应用
 - 你自己的飞书/Lark `open_id`
 
@@ -103,6 +103,7 @@ FAR_STATE=~/.feishu-agent-remote/state.sqlite
 ```yaml
 owner_open_id: ou_xxxxxxxxxxxxxxxx
 default_repo: agent
+default_runtime: codex
 
 repos:
   agent: /Users/you/Code/feishu-agent-remote
@@ -112,21 +113,25 @@ repos:
 authorized_open_ids:
   - ou_xxxxxxxxxxxxxxxx
 
-codex_bin: codex
-codex_profile: null
 lark_cli_bin: lark-cli
-default_sandbox: workspace-write
 bot_names:
   - your-bot-name
+
+runtimes:
+  codex:
+    type: codex
+    bin: codex
+    profile: null
+    sandbox: workspace-write
+  claude:
+    type: claude
+    bin: claude
+    permission_mode: acceptEdits
 ```
 
 `bot_names` 应该填写你自己的飞书/Lark bot 展示名或群聊中的 @ 名称。这个名字由用户自己选择，不是项目固定值。
 
-如果你的 Codex CLI 需要 profile，可以这样设置：
-
-```yaml
-codex_profile: fastrelay
-```
+如果你的 Codex CLI 需要 profile，把 `runtimes.codex.profile` 设置为 `fastrelay`。如果要启动 Claude 专员，用 `/new runtime=claude <repo> <title> [任务]`。
 
 ### 5. 启动并和 bot 对话
 
@@ -147,6 +152,7 @@ codex_profile: fastrelay
 ```text
 @your-bot /status
 @your-bot /new app release-helper 检查发版风险
+@your-bot /new runtime=claude app claude-reviewer review 当前 diff
 ```
 
 ## 🤖 Quick Start For Agents
@@ -175,7 +181,7 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 然后补齐配置，但不要提交 secrets：
 
 - `.env`：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`
-- `~/.feishu-agent-remote/config.yaml`：`owner_open_id`、`authorized_open_ids`、`repos`、可选的 `codex_profile`
+- `~/.feishu-agent-remote/config.yaml`：`owner_open_id`、`authorized_open_ids`、`repos`、可选的 `runtimes`
 
 ### 3. Runtime contract
 
@@ -192,8 +198,8 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 | --- | --- |
 | `/help` | 查看核心命令和当前上下文提示。 |
 | `/status` | 查看当前线上专员、repo、状态、最近任务和待确认事项。 |
-| `/new <repo> <title> [task]` | 创建新的线上专员；省略 `task` 时进入待命模式。 |
-| 普通文本 | 继续当前绑定专员的 Codex session。 |
+| `/new [runtime=<name>] <repo> <title> [task]` | 创建新的线上专员；默认使用 `default_runtime`，省略 `task` 时进入待命模式。 |
+| 普通文本 | 继续当前绑定专员的 runtime session。 |
 | `/agents [n]` | 列出线上专员；当前绑定会用 `*` 标记。 |
 | `/attach <agent_id>` | 将当前聊天上下文切换到已有线上专员。 |
 | `/detach` | 解除当前聊天绑定，但不删除线上专员。 |
@@ -203,15 +209,17 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 | `/cancel [agent_id]` | 取消运行中的任务；默认使用当前专员。 |
 | `/repos` | 列出已配置的 repo alias。 |
 | `/switch-repo <alias>` | 切换当前线上专员的 repo alias。 |
-| `/codex-sessions [n]` | 扫描本机 `~/.codex/sessions` 中最近的 Codex session。 |
+| `/runtime-sessions [runtime] [n]` | 扫描指定 runtime 的最近本机 session；支持 `codex` 和 `claude`。 |
+| `/codex-sessions [n]` | 兼容 alias，扫描 Codex session。 |
+| `/runtimes` | 查看已配置 runtime 以及本机 CLI 是否可用。 |
 | `/handoff [agent_id]` | 让线上专员生成结构化进度交接。 |
 | `/pending` | 查看待确认操作。 |
 | `/send <open_id> <text>` | 准备一条 user 身份消息，并创建确认单。 |
 | `/approve <id>` | 批准并执行待确认操作。 |
 | `/reject <id>` | 拒绝待确认操作。 |
-| `/doctor` | 检查本机 `lark-cli`、Codex、配置、repo 和 state 连接。 |
+| `/doctor` | 检查本机 `lark-cli`、runtime、配置、repo 和 state 连接。 |
 
-兼容 alias 仍可用：`/remote-codex` → `/agents`，`/recent-codex` → `/codex-sessions`，`/close` → `/detach`，`/repo` → `/repos` 或 `/switch-repo`，`/summarize` → `/handoff`。
+兼容 alias 仍可用：`/remote-codex` → `/agents`，`/recent-codex` 和 `/codex-sessions` → `/runtime-sessions codex`，`/close` → `/detach`，`/repo` → `/repos` 或 `/switch-repo`，`/summarize` → `/handoff`。
 
 ## 💬 示例流程
 
@@ -223,9 +231,9 @@ Bot：已绑定 `agent-console`。Agent ID：rc_ab12cd34 ...
 Bot：当前目标是 ... 已完成 ... 下一步建议 ...
 
 你：/agents 5
-Bot：* rc_ab12cd34 `agent-console` repo=agent session=019e...
+Bot：* rc_ab12cd34 `agent-console` repo=agent runtime=codex session=019e...
 
-你：/new app bug-hunter 检查最近失败的测试
+你：/new runtime=claude app bug-hunter 检查最近失败的测试
 Bot：已从 `agent-console` 退出，切换到 `bug-hunter` ...
 
 你：/attach rc_ab12cd34
@@ -240,7 +248,7 @@ Feishu Agent Remote 默认偏保守。
 - 仓库必须显式写在配置文件里。
 - user 身份发送必须 `/approve`。
 - bot 回复和 user 身份发送分开处理。
-- Codex 使用配置中的 sandbox mode。
+- Codex 使用配置中的 sandbox mode；Claude 使用配置中的 permission mode。
 - Secrets 应该留在 `.env` 和本地配置中，不要写进共享文档或提交。
 
 这仍然是一个可以远程控制本机的工具。请把飞书 bot 当作高权限入口来对待，谨慎管理 app secret、授权用户列表和 repo 白名单。
@@ -274,7 +282,7 @@ Feishu Agent Remote 默认偏保守。
 当前测试覆盖：
 
 - 配置读取；
-- Codex JSONL 解析；
+- Codex JSONL 和 Claude stream-json 解析；
 - 权限检查；
 - session 创建和恢复；
 - 线上专员列表、attach、remove；
@@ -282,9 +290,9 @@ Feishu Agent Remote 默认偏保守。
 
 ## 🗺️ Roadmap
 
-- 增加不 resume Codex 的只读 session inspection。
+- 增加不 resume runtime session 的只读 session inspection。
 - 增加 launchd installer/uninstaller。
-- 支持 Codex 之外的更多本机 Agent CLI。
+- 继续扩展 OpenCode/Gemini 等本机 Agent CLI。
 - 增加可选的 session history web dashboard。
 
 ## 🪪 名字

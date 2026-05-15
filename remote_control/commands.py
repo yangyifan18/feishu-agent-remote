@@ -3,7 +3,8 @@ from dataclasses import dataclass
 
 ALIASES = {
     "remote-codex": "agents",
-    "recent-codex": "codex-sessions",
+    "recent-codex": "runtime-sessions",
+    "codex-sessions": "runtime-sessions",
     "close": "detach",
     "sessions": "bindings",
     "summarize": "handoff",

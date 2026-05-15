@@ -4,7 +4,7 @@
 
 > Bring your local coding agents into Feishu/Lark: start work from your phone, switch sessions, and ask agents to report progress like online teammates.
 
-Feishu Agent Remote is a lightweight remote-control layer for local coding agents. It listens to Feishu/Lark messages, maps them to local repositories and persistent Codex sessions, then replies back in chat like an always-on online teammate.
+Feishu Agent Remote is a lightweight remote-control layer for local coding agents. It listens to Feishu/Lark messages, maps them to local repositories and persistent local agent sessions, then replies back in chat like an always-on online teammate.
 
 ```text
 💬 Feishu / Lark chat
@@ -13,7 +13,7 @@ Feishu Agent Remote is a lightweight remote-control layer for local coding agent
       ↓
 🧭 Feishu Agent Remote
       ↓
-🧑‍💻 local Codex sessions + repo allowlist
+🧑‍💻 local Codex / Claude sessions + repo allowlist
       ↓
 📣 reply / report / optional user-identity sends
 ```
@@ -25,7 +25,7 @@ Sometimes your laptop is running, but you are not in front of it.
 You may be on your phone, in a Feishu group, trying to:
 
 - ask an agent to continue work in a repo;
-- create a fresh isolated Codex session for a task;
+- create a fresh isolated Codex or Claude session for a task;
 - check what your remote coding helper is doing;
 - summarize progress back to yourself or a team chat;
 - send a message as yourself, but only after explicit approval.
@@ -36,7 +36,7 @@ Feishu Agent Remote turns that flow into a chat-native command console.
 
 - **Feishu-first remote control**: private chat or configured group mentions can drive local work.
 - **Online helpers**: create named remote agents with `/new`, list them with `/agents`, switch with `/attach`.
-- **Persistent Codex sessions**: follow-up messages resume the bound local Codex session instead of starting over.
+- **Persistent runtime sessions**: follow-up messages resume the bound Codex or Claude session instead of starting over.
 - **Repo allowlist**: only configured repositories can be accessed.
 - **Owner-only by default**: ignore commands from unauthorized users.
 - **Approval-gated user sends**: `/send` creates a confirmation; `/approve` performs the actual user-identity send.
@@ -51,7 +51,7 @@ Current backend:
 
 - Feishu/Lark event input: `lark-cli event consume im.message.receive_v1 --as bot`
 - Feishu/Lark replies: `lark-cli im +messages-reply --as bot`
-- Local agent runtime: `codex exec` / `codex resume`
+- Local agent runtimes: Codex CLI and Claude Code CLI
 - State store: SQLite
 - Config: local YAML-style file
 
@@ -64,7 +64,7 @@ This path is for people setting up their own Feishu/Lark remote agent from scrat
 You need:
 
 - official `lark-cli`: https://github.com/larksuite/cli
-- Codex CLI installed and working locally
+- Codex CLI installed and working locally; Claude Code CLI is optional for `runtime=claude`
 - a Feishu/Lark bot app with message event permissions enabled
 - your own Feishu/Lark `open_id`
 
@@ -103,6 +103,7 @@ Create `~/.feishu-agent-remote/config.yaml`:
 ```yaml
 owner_open_id: ou_xxxxxxxxxxxxxxxx
 default_repo: agent
+default_runtime: codex
 
 repos:
   agent: /Users/you/Code/feishu-agent-remote
@@ -112,21 +113,25 @@ repos:
 authorized_open_ids:
   - ou_xxxxxxxxxxxxxxxx
 
-codex_bin: codex
-codex_profile: null
 lark_cli_bin: lark-cli
-default_sandbox: workspace-write
 bot_names:
   - your-bot-name
+
+runtimes:
+  codex:
+    type: codex
+    bin: codex
+    profile: null
+    sandbox: workspace-write
+  claude:
+    type: claude
+    bin: claude
+    permission_mode: acceptEdits
 ```
 
 `bot_names` should match the display name or mention text of your own Feishu/Lark bot. Pick any name you like; it is not fixed by this project.
 
-If your Codex CLI needs a profile, set it here:
-
-```yaml
-codex_profile: fastrelay
-```
+If your Codex CLI needs a profile, set `runtimes.codex.profile` to `fastrelay`. To start a Claude helper, use `/new runtime=claude <repo> <title> [task]`.
 
 ### 5. Run and talk to the bot
 
@@ -147,6 +152,7 @@ Group chat:
 ```text
 @your-bot /status
 @your-bot /new app release-helper Check release risks
+@your-bot /new runtime=claude app claude-reviewer Review the current diff
 ```
 
 ## 🤖 Quick Start For Agents
@@ -175,7 +181,7 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 Then fill in, without committing secrets:
 
 - `.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
-- `~/.feishu-agent-remote/config.yaml`: `owner_open_id`, `authorized_open_ids`, `repos`, optional `codex_profile`
+- `~/.feishu-agent-remote/config.yaml`: `owner_open_id`, `authorized_open_ids`, `repos`, optional `runtimes`
 
 ### 3. Runtime contract
 
@@ -192,8 +198,8 @@ Then fill in, without committing secrets:
 | --- | --- |
 | `/help` | Show core commands and context-aware next steps. |
 | `/status` | Show the current online helper, repo, status, latest run, and pending confirmations. |
-| `/new <repo> <title> [task]` | Create a new online helper; if `task` is omitted, it starts in standby mode. |
-| plain text | Continue the currently bound helper's Codex session. |
+| `/new [runtime=<name>] <repo> <title> [task]` | Create a new online helper; defaults to `default_runtime`; omit `task` for standby mode. |
+| plain text | Continue the currently bound helper's runtime session. |
 | `/agents [n]` | List online helpers; the current binding is marked with `*`. |
 | `/attach <agent_id>` | Switch the current chat context to an existing online helper. |
 | `/detach` | Clear the current chat binding without deleting the helper. |
@@ -203,15 +209,17 @@ Then fill in, without committing secrets:
 | `/cancel [agent_id]` | Cancel a running task; defaults to the current helper. |
 | `/repos` | List configured repository aliases. |
 | `/switch-repo <alias>` | Switch the current helper's repo alias. |
-| `/codex-sessions [n]` | Scan local `~/.codex/sessions` for recent Codex sessions. |
+| `/runtime-sessions [runtime] [n]` | Scan recent local sessions for a runtime; `codex` and `claude` are supported. |
+| `/codex-sessions [n]` | Compatibility alias that scans Codex sessions. |
+| `/runtimes` | List configured local runtimes and whether their CLI binaries are available. |
 | `/handoff [agent_id]` | Ask a helper to produce a structured progress handoff. |
 | `/pending` | List pending approval-gated operations. |
 | `/send <open_id> <text>` | Prepare a user-identity message and create a confirmation. |
 | `/approve <id>` | Approve and execute a pending confirmation. |
 | `/reject <id>` | Reject a pending confirmation. |
-| `/doctor` | Check local `lark-cli`, Codex, config, repos, and state wiring. |
+| `/doctor` | Check local `lark-cli`, runtimes, config, repos, and state wiring. |
 
-Compatibility aliases remain available: `/remote-codex` → `/agents`, `/recent-codex` → `/codex-sessions`, `/close` → `/detach`, `/repo` → `/repos` or `/switch-repo`, and `/summarize` → `/handoff`.
+Compatibility aliases remain available: `/remote-codex` → `/agents`, `/recent-codex` and `/codex-sessions` → `/runtime-sessions codex`, `/close` → `/detach`, `/repo` → `/repos` or `/switch-repo`, and `/summarize` → `/handoff`.
 
 ## 💬 Example Flow
 
@@ -223,9 +231,9 @@ You: Summarize current repo progress. Do not modify files.
 Bot: Current goal ... completed work ... next steps ...
 
 You: /agents 5
-Bot: * rc_ab12cd34 `agent-console` repo=agent session=019e...
+Bot: * rc_ab12cd34 `agent-console` repo=agent runtime=codex session=019e...
 
-You: /new app bug-hunter Check recently failing tests
+You: /new runtime=claude app bug-hunter Check recently failing tests
 Bot: 已从 `agent-console` 退出，切换到 `bug-hunter` ...
 
 You: /attach rc_ab12cd34
@@ -240,7 +248,7 @@ Feishu Agent Remote is intentionally conservative.
 - Repositories must be explicitly listed in config.
 - User-identity sends require `/approve`.
 - Bot replies and user sends are separated.
-- Codex runs use the configured sandbox mode.
+- Codex runs use the configured sandbox mode; Claude runs use the configured Claude permission mode.
 - Secrets should stay in `.env` and local config, never in shared docs or commits.
 
 This is still a remote-control tool for a local machine. Treat the Feishu bot as a privileged interface and keep the app secret, owner list, and repo allowlist tight.
@@ -274,7 +282,7 @@ Run tests:
 Current test coverage includes:
 
 - config loading;
-- Codex JSONL parsing;
+- Codex JSONL and Claude stream-json parsing;
 - auth checks;
 - session creation and resume;
 - remote helper listing, attach, remove;
@@ -282,9 +290,9 @@ Current test coverage includes:
 
 ## 🗺️ Roadmap
 
-- Add pure read-only session inspection without resuming Codex.
+- Add pure read-only session inspection without resuming a runtime session.
 - Add first-class launchd installer/uninstaller.
-- Support more local agent CLIs beyond Codex.
+- Support more local agent CLIs beyond Codex and Claude, such as OpenCode/Gemini.
 - Add optional web dashboard for session history.
 
 ## 🪪 Name
