@@ -1,10 +1,41 @@
 from pathlib import Path
 from typing import Any
 
-from .models import RemoteConfig, RepoConfig, RuntimeConfig
+from .models import AgentTemplate, RemoteConfig, RepoConfig, RuntimeConfig
 
 
 DEFAULT_CONFIG_PATH = Path("~/.feishu-agent-remote/config.yaml").expanduser()
+
+
+BUILTIN_AGENT_TEMPLATES = {
+    "reviewer": AgentTemplate(
+        name="reviewer",
+        description="Review code changes and identify bugs, risks, and missing tests.",
+        runtime=None,
+        prompt=(
+            "请作为代码审查线上专员工作。优先指出 bug、行为回归、风险和缺失测试；"
+            "结论要具体到文件/命令/现象。任务：${task}"
+        ),
+    ),
+    "implementer": AgentTemplate(
+        name="implementer",
+        description="Implement a concrete task, verify it, and report the result.",
+        runtime=None,
+        prompt=(
+            "请作为实现型线上专员工作。先确认目标，再做必要修改并运行验证；"
+            "最后用中文汇报改动、验证和风险。任务：${task}"
+        ),
+    ),
+    "reporter": AgentTemplate(
+        name="reporter",
+        description="Summarize current repo/session progress without modifying files.",
+        runtime=None,
+        prompt=(
+            "请作为进度汇报线上专员工作。总结当前 repo 或 session 的目标、已完成事项、"
+            "验证状态、风险和下一步建议。不要修改任何文件。任务：${task}"
+        ),
+    ),
+}
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
@@ -44,6 +75,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
     codex_profile = codex_runtime.profile if codex_runtime else _optional_str(raw.get("codex_profile"))
     default_sandbox = (codex_runtime.sandbox if codex_runtime and codex_runtime.sandbox else str(raw.get("default_sandbox", "workspace-write")))
 
+    agent_templates = _agent_templates(raw)
+
     return RemoteConfig(
         owner_open_id=owner,
         authorized_open_ids=authorized_set,
@@ -57,7 +90,33 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
         config_path=config_path,
         default_runtime=default_runtime,
         runtimes=runtimes,
+        agent_templates=agent_templates,
     )
+
+
+def _agent_templates(raw: dict[str, Any]) -> dict[str, AgentTemplate]:
+    templates = dict(BUILTIN_AGENT_TEMPLATES)
+    templates_raw = raw.get("agent_templates") or {}
+    if not templates_raw:
+        return templates
+    if not isinstance(templates_raw, dict):
+        raise ValueError("agent_templates must be a mapping")
+    for name, value in templates_raw.items():
+        template_name = str(name).strip()
+        if not template_name:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"agent_template {template_name!r} must be a mapping")
+        prompt = str(value.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError(f"agent_template {template_name!r} requires prompt")
+        templates[template_name] = AgentTemplate(
+            name=template_name,
+            description=str(value.get("description") or ""),
+            runtime=_optional_str(value.get("runtime")),
+            prompt=prompt,
+        )
+    return templates
 
 
 def _optional_str(value: object) -> str | None:

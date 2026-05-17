@@ -67,6 +67,7 @@ class RemoteRouter:
             "runs": self.handlers._runs,
             "cancel": self.handlers._cancel,
             "runtimes": self.handlers._runtimes,
+            "templates": self.handlers._templates,
             "doctor": self.handlers._doctor,
         }
         handler = handlers.get(command.name)

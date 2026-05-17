@@ -21,6 +21,14 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class AgentTemplate:
+    name: str
+    description: str
+    prompt: str
+    runtime: str | None = None
+
+
+@dataclass(frozen=True)
 class RemoteConfig:
     owner_open_id: str
     authorized_open_ids: frozenset[str]
@@ -34,6 +42,7 @@ class RemoteConfig:
     config_path: Path | None = None
     default_runtime: str = "codex"
     runtimes: dict[str, RuntimeConfig] | None = None
+    agent_templates: dict[str, AgentTemplate] | None = None
 
 
 @dataclass(frozen=True)

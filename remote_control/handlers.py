@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from string import Template
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .commands import Command
+from .paths import CANONICAL_CONFIG, CANONICAL_DIR, CANONICAL_STATE, is_legacy_path
 from .models import RuntimeRunResult, IncomingMessage, RemoteAgent, RemoteConfig, RunRecord, SessionBinding
 from .run_manager import RunAlreadyActive, RunManager
 from .runtimes import RuntimeRegistry
@@ -40,7 +42,9 @@ class CommandHandlers:
             f"Feishu Agent Remote 帮助\n{current}\n\n"
             "常用命令：\n"
             "- `/new [runtime=<name>] <repo> <title> [任务]` 创建线上专员\n"
+            "- `/new template=<name> <repo> <title> [任务]` 用模板创建线上专员\n"
             "- `/agents` 查看线上专员\n"
+            "- `/templates` 查看线上专员模板\n"
             "- `/attach <agent_id>` 切换专员\n"
             "- `/status` 查看当前状态\n"
             "- `/runs` 查看最近任务\n"
@@ -53,15 +57,26 @@ class CommandHandlers:
         await self.lark.reply(msg.message_id, text)
 
     async def _new_session(self, msg: IncomingMessage, command: Command) -> None:
-        runtime, rest = self._parse_runtime_arg(command.args)
+        runtime, template_name, rest, explicit_runtime = self._parse_new_options(command.args)
+        template = None
+        if template_name:
+            template = (self.config.agent_templates or {}).get(template_name)
+            if template is None:
+                await self.lark.reply(msg.message_id, f"未知模板：{template_name}。可用：{', '.join(sorted((self.config.agent_templates or {}).keys()))}")
+                return
+            if not explicit_runtime and template.runtime:
+                runtime = template.runtime
         if not self.runtime_registry.has(runtime):
             await self.lark.reply(msg.message_id, f"未知 runtime：{runtime}。可用：{', '.join(self.runtime_registry.names())}")
             return
         repo_alias, title, prompt = self._parse_new_args(rest)
-        if not prompt and title:
+        task = prompt or "待命，等待后续指令"
+        if template:
+            prompt = _render_template_prompt(template.prompt, task, repo_alias, title or _title_from_prompt(task), runtime)
+        elif not prompt and title:
             prompt = _standby_prompt(title)
         if not prompt:
-            await self.lark.reply(msg.message_id, "用法：/new [runtime=<name>] <repo> <title> [任务]，例如 `/new runtime=claude agent agent-console 检查当前状态`。")
+            await self.lark.reply(msg.message_id, "用法：/new [runtime=<name>] [template=<name>] <repo> <title> [任务]，例如 `/new template=reviewer agent agent-console 检查当前状态`。")
             return
 
         repo_path = self._repo_path(repo_alias)
@@ -69,7 +84,8 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, f"未知 repo：{repo_alias}。可用：{', '.join(self.config.repos)}")
             return
 
-        await self.lark.reply(msg.message_id, f"收到，开始创建线上专员 `{title or _title_from_prompt(prompt)}`（runtime={runtime}）。")
+        template_text = f"，template={template_name}" if template_name else ""
+        await self.lark.reply(msg.message_id, f"收到，开始创建线上专员 `{title or _title_from_prompt(task)}`（runtime={runtime}{template_text}）。")
         run, result = await self.run_manager.start_new(
             chat_id=msg.chat_id,
             message_id=msg.message_id,
@@ -388,6 +404,27 @@ class CommandHandlers:
     async def _runtimes(self, msg: IncomingMessage, command: Command) -> None:
         await self.lark.reply(msg.message_id, "Runtimes：\n" + "\n".join(self.runtime_registry.status_lines()))
 
+    async def _templates(self, msg: IncomingMessage, command: Command) -> None:
+        templates = self.config.agent_templates or {}
+        name = command.args.strip()
+        if name:
+            template = templates.get(name)
+            if template is None:
+                await self.lark.reply(msg.message_id, f"未知模板：{name}。可用：{', '.join(sorted(templates))}")
+                return
+            preview = _truncate(template.prompt.replace("\n", " "), 240)
+            runtime = template.runtime or self.config.default_runtime
+            await self.lark.reply(
+                msg.message_id,
+                f"模板 `{template.name}`\nRuntime：{runtime}\n说明：{template.description or '-'}\nPrompt：{preview}",
+            )
+            return
+        lines = [
+            f"- {name}: runtime={template.runtime or self.config.default_runtime} {template.description or ''}".rstrip()
+            for name, template in sorted(templates.items())
+        ]
+        await self.lark.reply(msg.message_id, "线上专员模板：\n" + "\n".join(lines) + "\n\n用法：/new template=<name> <repo> <title> [任务]")
+
     async def _doctor(self, msg: IncomingMessage, command: Command) -> None:
         lark_path = shutil.which(self.config.lark_cli_bin)
         config_path = self.config.config_path
@@ -395,10 +432,15 @@ class CommandHandlers:
             _check_line("lark-cli executable", bool(lark_path), self.config.lark_cli_bin),
             _check_line("lark-cli event list", await _command_ok([self.config.lark_cli_bin, "event", "list"]) if lark_path else False, "event list"),
             _check_line("config parsed", config_path is None or config_path.exists(), str(config_path or "in-memory")),
+            _check_line("config canonical", not config_path or not is_legacy_path(config_path), str(CANONICAL_CONFIG)),
+            _check_line("state canonical", not is_legacy_path(self.state.path), str(CANONICAL_STATE)),
             _check_line("owner_open_id", bool(self.config.owner_open_id), self.config.owner_open_id or "missing"),
             _check_line("authorized users", bool(self.config.authorized_open_ids), str(len(self.config.authorized_open_ids))),
             _check_line("state sqlite", self.state.path.exists(), str(self.state.path)),
             _check_line("state writable", self.state.check_writable(), str(self.state.path.parent)),
+            _check_line("agent templates", bool(self.config.agent_templates), str(len(self.config.agent_templates or {}))),
+            _check_line("service plist", _launchd_plist_path().exists(), str(_launchd_plist_path())),
+            _check_line("service logs dir", (CANONICAL_DIR / "logs").exists(), str(CANONICAL_DIR / "logs")),
         ]
         for name in self.runtime_registry.names():
             runtime_config = self.config.runtimes.get(name) if self.config.runtimes else None
@@ -504,6 +546,20 @@ class CommandHandlers:
             runtime = parts.pop(0).split("=", 1)[1] or runtime
         return runtime, " ".join(parts)
 
+    def _parse_new_options(self, args: str) -> tuple[str, str | None, str, bool]:
+        runtime = self.config.default_runtime
+        template: str | None = None
+        explicit_runtime = False
+        parts = args.split()
+        while parts and (parts[0].startswith("runtime=") or parts[0].startswith("template=")):
+            key, value = parts.pop(0).split("=", 1)
+            if key == "runtime":
+                runtime = value or runtime
+                explicit_runtime = True
+            elif key == "template":
+                template = value or None
+        return runtime, template, " ".join(parts), explicit_runtime
+
     def _parse_runtime_sessions_args(self, command: Command) -> tuple[str, int]:
         parts = command.args.split()
         runtime = "codex" if command.raw_name in {"codex-sessions", "recent-codex"} else self.config.default_runtime
@@ -569,6 +625,10 @@ def _standby_prompt(title: str) -> str:
     return f"创建名为 `{title}` 的线上专员会话并待命。请只用一句中文确认已待命，不要修改任何文件。"
 
 
+def _render_template_prompt(prompt: str, task: str, repo: str, title: str, runtime: str) -> str:
+    return Template(prompt).safe_substitute(task=task, repo=repo, title=title, runtime=runtime)
+
+
 def _format_run_line(run: RunRecord | None) -> str:
     if run is None:
         return "无"
@@ -597,6 +657,10 @@ def _truncate(text: str, limit: int) -> str:
 
 def _check_line(name: str, ok: bool, detail: str) -> str:
     return f"{'✅' if ok else '❌'} {name}: {detail}"
+
+
+def _launchd_plist_path() -> Path:
+    return Path("~/Library/LaunchAgents/com.feishu-agent-remote.plist").expanduser()
 
 
 async def _command_ok(argv: list[str]) -> bool:

@@ -8,8 +8,10 @@ from pathlib import Path
 from remote_control.codex_runner import parse_codex_jsonl
 from remote_control.codex_runner import CodexRunner
 from remote_control.claude_runner import ClaudeRunner, parse_claude_stream_json
+from remote_control import cli
 from remote_control.config import load_config
 from remote_control.models import CodexSessionMeta
+from remote_control.models import AgentTemplate
 from remote_control.models import IncomingMessage
 from remote_control.router import RemoteRouter
 from remote_control.runtimes import RuntimeRegistry
@@ -248,6 +250,76 @@ class RemoteControlTests(unittest.TestCase):
             self.assertEqual(config.runtimes["claude"].type, "claude")
             self.assertEqual(config.runtimes["claude"].permission_mode, "acceptEdits")
 
+    def test_load_config_merges_builtin_and_custom_agent_templates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "owner_open_id: ou_owner",
+                        "default_repo: agent",
+                        "repos:",
+                        "  agent: /tmp/agent",
+                        "agent_templates:",
+                        "  reviewer:",
+                        "    runtime: claude",
+                        "    description: Custom reviewer",
+                        "    prompt: Review ${task} in ${repo}",
+                        "  planner:",
+                        "    description: Plan work",
+                        "    prompt: Plan ${task}",
+                    ]
+                )
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.agent_templates["reviewer"].runtime, "claude")
+            self.assertEqual(config.agent_templates["reviewer"].prompt, "Review ${task} in ${repo}")
+            self.assertIn("implementer", config.agent_templates)
+            self.assertIn("planner", config.agent_templates)
+
+    def test_migrate_config_dry_run_and_force_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            legacy_config = base / "legacy" / "config.yaml"
+            legacy_state = base / "legacy" / "state.sqlite"
+            canonical_config = base / "new" / "config.yaml"
+            canonical_state = base / "new" / "state.sqlite"
+            legacy_config.parent.mkdir()
+            canonical_config.parent.mkdir()
+            legacy_config.write_text("legacy config")
+            legacy_state.write_text("legacy state")
+            canonical_config.write_text("old config")
+
+            old = (cli.LEGACY_CONFIG, cli.LEGACY_STATE, cli.CANONICAL_CONFIG, cli.CANONICAL_STATE)
+            try:
+                cli.LEGACY_CONFIG = legacy_config
+                cli.LEGACY_STATE = legacy_state
+                cli.CANONICAL_CONFIG = canonical_config
+                cli.CANONICAL_STATE = canonical_state
+
+                dry = cli.migrate_config(dry_run=True)
+                self.assertIn((legacy_state, canonical_state), dry.copied)
+                self.assertEqual(canonical_config.read_text(), "old config")
+
+                result = cli.migrate_config(force=True)
+                self.assertEqual(canonical_config.read_text(), "legacy config")
+                self.assertEqual(canonical_state.read_text(), "legacy state")
+                self.assertTrue(result.backups)
+            finally:
+                cli.LEGACY_CONFIG, cli.LEGACY_STATE, cli.CANONICAL_CONFIG, cli.CANONICAL_STATE = old
+
+    def test_build_plist_contains_service_paths_and_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = cli.build_plist(repo_root=Path(tmp), python="/usr/bin/python3")
+
+            self.assertEqual(plist["Label"], cli.LABEL)
+            self.assertEqual(plist["ProgramArguments"], ["/usr/bin/python3", str(Path(tmp) / "main.py")])
+            self.assertEqual(plist["WorkingDirectory"], tmp)
+            self.assertIn("FAR_CONFIG", plist["EnvironmentVariables"])
+            self.assertIn("StandardOutPath", plist)
+
     def test_codex_runner_puts_profile_before_exec_command(self):
         runner = CodexRunner(profile="fastrelay")
 
@@ -402,6 +474,51 @@ class RemoteControlTests(unittest.TestCase):
                 agent = router.state.list_remote_agents()[0]
                 self.assertEqual(agent.runtime, "claude")
                 self.assertIn("claude started", lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_new_session_can_use_agent_template(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                await router.handle(message("/new template=reviewer agent review-diff inspect changes"))
+
+                self.assertEqual(runner.calls[0][0], "start")
+                self.assertIn("inspect changes", runner.calls[0][2])
+                self.assertIn("代码审查", runner.calls[0][2])
+                self.assertEqual(router.state.list_remote_agents()[0].title, "review-diff")
+                self.assertIn("template=reviewer", lark.replies[0][1])
+
+        asyncio.run(run())
+
+    def test_new_session_runtime_arg_overrides_template_runtime(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runners, lark = make_multi_runtime_router(tmp)
+                router.config.agent_templates["reviewer"] = AgentTemplate(
+                    name="reviewer",
+                    description="Codex reviewer",
+                    runtime="codex",
+                    prompt="Review with ${runtime}: ${task}",
+                )
+                await router.handle(message("/new runtime=claude template=reviewer agent review-diff inspect changes"))
+
+                self.assertEqual(runners["codex"].calls, [])
+                self.assertEqual(runners["claude"].calls[0][0], "start")
+                self.assertIn("inspect changes", runners["claude"].calls[0][2])
+
+        asyncio.run(run())
+
+    def test_templates_command_lists_and_shows_template(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                await router.handle(message("/templates"))
+                self.assertIn("reviewer", lark.replies[-1][1])
+
+                await router.handle(message("/templates reviewer"))
+                self.assertIn("模板 `reviewer`", lark.replies[-1][1])
+                self.assertIn("Runtime", lark.replies[-1][1])
 
         asyncio.run(run())
 

@@ -41,7 +41,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 - **默认 owner-only**：未授权用户的命令会被忽略。
 - **高影响操作确认**：`/send` 只创建确认单，`/approve` 后才会以 user 身份发送。
 - **基于官方 CLI**：事件接收和 IM 回复基于 `lark-cli`。
-- **适合 Mac 常驻**：可以通过 `launchd` 保活。
+- **适合 Mac 常驻**：用 `python -m remote_control.cli service ...` 管理 launchd。
 
 ## 🧪 当前状态
 
@@ -127,13 +127,39 @@ runtimes:
     type: claude
     bin: claude
     permission_mode: acceptEdits
+
+agent_templates:
+  reviewer:
+    runtime: codex
+    description: Review diffs and identify risks.
+    prompt: |
+      请作为代码审查线上专员工作。任务：${task}
 ```
 
 `bot_names` 应该填写你自己的飞书/Lark bot 展示名或群聊中的 @ 名称。这个名字由用户自己选择，不是项目固定值。
 
-如果你的 Codex CLI 需要 profile，把 `runtimes.codex.profile` 设置为 `fastrelay`。如果要启动 Claude 专员，用 `/new runtime=claude <repo> <title> [任务]`。
+如果你的 Codex CLI 需要 profile，把 `runtimes.codex.profile` 设置为 `fastrelay`。如果要启动 Claude 专员，用 `/new runtime=claude <repo> <title> [任务]`。如果要使用角色模板，用 `/new template=reviewer <repo> <title> [任务]`。
 
-### 5. 启动并和 bot 对话
+### 5. 可选：迁移旧配置并安装 launchd
+
+如果你之前使用过 `~/.yyf-codex`，先迁移到 canonical 路径：
+
+```bash
+python -m remote_control.cli migrate-config --dry-run
+python -m remote_control.cli migrate-config
+```
+
+在 macOS 上用 launchd 常驻运行：
+
+```bash
+python -m remote_control.cli service install
+python -m remote_control.cli service status
+python -m remote_control.cli service logs --lines 80
+```
+
+如果想少打字，可以设置：`alias far='python -m remote_control.cli'`。
+
+### 6. 启动并和 bot 对话
 
 ```bash
 .venv/bin/python main.py
@@ -198,7 +224,7 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 | --- | --- |
 | `/help` | 查看核心命令和当前上下文提示。 |
 | `/status` | 查看当前线上专员、repo、状态、最近任务和待确认事项。 |
-| `/new [runtime=<name>] <repo> <title> [task]` | 创建新的线上专员；默认使用 `default_runtime`，省略 `task` 时进入待命模式。 |
+| `/new [runtime=<name>] [template=<name>] <repo> <title> [task]` | 创建新的线上专员；模板封装 reviewer/implementer/reporter 等常用角色。 |
 | 普通文本 | 继续当前绑定专员的 runtime session。 |
 | `/agents [n]` | 列出线上专员；当前绑定会用 `*` 标记。 |
 | `/attach <agent_id>` | 将当前聊天上下文切换到已有线上专员。 |
@@ -212,12 +238,13 @@ cp config.example.yaml ~/.feishu-agent-remote/config.yaml
 | `/runtime-sessions [runtime] [n]` | 扫描指定 runtime 的最近本机 session；支持 `codex` 和 `claude`。 |
 | `/codex-sessions [n]` | 兼容 alias，扫描 Codex session。 |
 | `/runtimes` | 查看已配置 runtime 以及本机 CLI 是否可用。 |
+| `/templates [name]` | 查看线上专员模板列表，或查看某个模板详情。 |
 | `/handoff [agent_id]` | 让线上专员生成结构化进度交接。 |
 | `/pending` | 查看待确认操作。 |
 | `/send <open_id> <text>` | 准备一条 user 身份消息，并创建确认单。 |
 | `/approve <id>` | 批准并执行待确认操作。 |
 | `/reject <id>` | 拒绝待确认操作。 |
-| `/doctor` | 检查本机 `lark-cli`、runtime、配置、repo 和 state 连接。 |
+| `/doctor` | 检查本机 `lark-cli`、runtime、模板、config/state 路径、service 提示、repo 和 state 连接。 |
 
 兼容 alias 仍可用：`/remote-codex` → `/agents`，`/recent-codex` 和 `/codex-sessions` → `/runtime-sessions codex`，`/close` → `/detach`，`/repo` → `/repos` 或 `/switch-repo`，`/summarize` → `/handoff`。
 

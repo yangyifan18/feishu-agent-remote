@@ -41,7 +41,7 @@ Feishu Agent Remote turns that flow into a chat-native command console.
 - **Owner-only by default**: ignore commands from unauthorized users.
 - **Approval-gated user sends**: `/send` creates a confirmation; `/approve` performs the actual user-identity send.
 - **CLI-native Feishu integration**: built on the official `lark-cli` event consumer and IM commands.
-- **Mac-friendly daemon mode**: can be kept alive with `launchd`.
+- **Mac-friendly daemon mode**: manage launchd with `python -m remote_control.cli service ...`.
 
 ## 🧪 Status
 
@@ -127,13 +127,39 @@ runtimes:
     type: claude
     bin: claude
     permission_mode: acceptEdits
+
+agent_templates:
+  reviewer:
+    runtime: codex
+    description: Review diffs and identify risks.
+    prompt: |
+      Review the task as a code reviewer. Task: ${task}
 ```
 
 `bot_names` should match the display name or mention text of your own Feishu/Lark bot. Pick any name you like; it is not fixed by this project.
 
-If your Codex CLI needs a profile, set `runtimes.codex.profile` to `fastrelay`. To start a Claude helper, use `/new runtime=claude <repo> <title> [task]`.
+If your Codex CLI needs a profile, set `runtimes.codex.profile` to `fastrelay`. To start a Claude helper, use `/new runtime=claude <repo> <title> [task]`. To use a role template, use `/new template=reviewer <repo> <title> [task]`.
 
-### 5. Run and talk to the bot
+### 5. Optional: migrate legacy config and install launchd
+
+If you used an older `~/.yyf-codex` setup, migrate to the canonical path:
+
+```bash
+python -m remote_control.cli migrate-config --dry-run
+python -m remote_control.cli migrate-config
+```
+
+Keep the bot alive on macOS with launchd:
+
+```bash
+python -m remote_control.cli service install
+python -m remote_control.cli service status
+python -m remote_control.cli service logs --lines 80
+```
+
+Tip: `alias far='python -m remote_control.cli'` if you want shorter commands.
+
+### 6. Run and talk to the bot
 
 ```bash
 .venv/bin/python main.py
@@ -198,7 +224,7 @@ Then fill in, without committing secrets:
 | --- | --- |
 | `/help` | Show core commands and context-aware next steps. |
 | `/status` | Show the current online helper, repo, status, latest run, and pending confirmations. |
-| `/new [runtime=<name>] <repo> <title> [task]` | Create a new online helper; defaults to `default_runtime`; omit `task` for standby mode. |
+| `/new [runtime=<name>] [template=<name>] <repo> <title> [task]` | Create a new online helper; templates wrap common roles like reviewer/implementer/reporter. |
 | plain text | Continue the currently bound helper's runtime session. |
 | `/agents [n]` | List online helpers; the current binding is marked with `*`. |
 | `/attach <agent_id>` | Switch the current chat context to an existing online helper. |
@@ -212,12 +238,13 @@ Then fill in, without committing secrets:
 | `/runtime-sessions [runtime] [n]` | Scan recent local sessions for a runtime; `codex` and `claude` are supported. |
 | `/codex-sessions [n]` | Compatibility alias that scans Codex sessions. |
 | `/runtimes` | List configured local runtimes and whether their CLI binaries are available. |
+| `/templates [name]` | List agent templates or inspect one template. |
 | `/handoff [agent_id]` | Ask a helper to produce a structured progress handoff. |
 | `/pending` | List pending approval-gated operations. |
 | `/send <open_id> <text>` | Prepare a user-identity message and create a confirmation. |
 | `/approve <id>` | Approve and execute a pending confirmation. |
 | `/reject <id>` | Reject a pending confirmation. |
-| `/doctor` | Check local `lark-cli`, runtimes, config, repos, and state wiring. |
+| `/doctor` | Check local `lark-cli`, runtimes, templates, config/state paths, service hints, repos, and state wiring. |
 
 Compatibility aliases remain available: `/remote-codex` → `/agents`, `/recent-codex` and `/codex-sessions` → `/runtime-sessions codex`, `/close` → `/detach`, `/repo` → `/repos` or `/switch-repo`, and `/summarize` → `/handoff`.
 

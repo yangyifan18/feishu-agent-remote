@@ -24,3 +24,20 @@ runtimes:
     type: claude
     bin: claude
     permission_mode: acceptEdits
+
+agent_templates:
+  reviewer:
+    runtime: codex
+    description: Review diffs and identify risks.
+    prompt: |
+      请作为代码审查线上专员工作。优先指出 bug、行为回归、风险和缺失测试。任务：${task}
+  implementer:
+    runtime: codex
+    description: Implement and verify a concrete task.
+    prompt: |
+      请作为实现型线上专员工作。完成任务并运行必要验证。任务：${task}
+  reporter:
+    runtime: codex
+    description: Summarize progress without modifying files.
+    prompt: |
+      请总结当前 repo/session 的目标、已完成工作、验证状态、风险和下一步。不要修改文件。任务：${task}
