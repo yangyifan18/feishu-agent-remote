@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from remote_control.codex_runner import parse_codex_jsonl
 from remote_control.codex_runner import CodexRunner
 from remote_control.claude_runner import ClaudeRunner, parse_claude_stream_json
 from remote_control import cli
+from remote_control import run_manager as run_manager_module
 from remote_control.config import load_config
 from remote_control.models import CodexSessionMeta
 from remote_control.models import AgentTemplate
@@ -67,6 +69,14 @@ class TimedOutCodexRunner(FakeCodexRunner):
 
 
 class SlowCodexRunner(FakeCodexRunner):
+    async def start(self, repo_path, prompt, on_started=None):
+        self.calls.append(("start", str(repo_path), prompt))
+        await asyncio.sleep(0.01)
+        if on_started:
+            on_started(12345)
+        await asyncio.sleep(0.05)
+        return {"session_id": f"codex-new-{len(self.calls)}", "summary": f"started {prompt}", "status": "succeeded"}
+
     async def resume(self, session_id, repo_path, prompt, on_started=None):
         self.calls.append(("resume", session_id, str(repo_path), prompt))
         await asyncio.sleep(0.01)
@@ -936,6 +946,92 @@ class RemoteControlTests(unittest.TestCase):
             self.assertEqual(reopened.get_session("oc_chat", "chat:oc_chat").runtime, "claude")
             self.assertEqual(reopened.get_run(run.id).runtime, "claude")
 
+    def test_state_migrates_thread_key_and_keeps_legacy_runs_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.sqlite"
+            conn = sqlite3.connect(state_path)
+            conn.execute(
+                """
+                CREATE TABLE runs (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT,
+                    chat_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    repo_alias TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    codex_session_id TEXT,
+                    prompt TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    pid INTEGER,
+                    summary TEXT,
+                    error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    started_at DATETIME,
+                    finished_at DATETIME
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    id, agent_id, chat_id, message_id, repo_alias, repo_path,
+                    codex_session_id, prompt, status
+                )
+                VALUES ('run_legacy', 'rc_test', 'oc_chat', 'om_run', 'agent', '/tmp/agent',
+                        'codex-new', 'persist thread', 'queued')
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            reopened = StateStore(state_path)
+
+            self.assertIsNone(reopened.get_run("run_legacy").thread_key)
+            created = reopened.create_run(
+                agent_id="rc_test",
+                chat_id="oc_chat",
+                message_id="om_new",
+                repo_alias="agent",
+                repo_path=Path("/tmp/agent"),
+                codex_session_id="codex-new",
+                prompt="new thread",
+                thread_key="chat:oc_chat",
+            )
+            self.assertEqual(reopened.get_running_run_for_binding("oc_chat", "chat:oc_chat").id, created.id)
+
+    def test_state_rejects_unknown_column_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = StateStore(Path(tmp) / "state.sqlite")
+            with state._connect() as conn:
+                with self.assertRaises(ValueError):
+                    state._ensure_column(conn, "runs; DROP TABLE runs", "evil")
+
+    def test_delete_remote_agents_and_pending_filters_are_parameterized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = StateStore(Path(tmp) / "state.sqlite")
+            agent = state.create_remote_agent(
+                "helper",
+                "agent",
+                Path("/tmp/agent"),
+                "codex-new",
+                "oc_chat",
+                "chat:oc_chat",
+            )
+            state.create_confirmation(
+                "send_message",
+                "ou_owner",
+                "oc_chat",
+                "om_msg",
+                {"target": "ou_target", "text": "hello"},
+            )
+
+            deleted = state.delete_remote_agents([f"{agent.id}') OR 1=1 --"])
+            pending = state.list_confirmations(requester_id="ou_owner' OR 1=1 --", chat_id="oc_chat")
+
+            self.assertEqual(deleted, [])
+            self.assertIsNotNone(state.get_remote_agent(agent.id))
+            self.assertEqual(pending, [])
+
     def test_cancel_reports_no_running_run_for_idle_agent(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:
@@ -970,6 +1066,48 @@ class RemoteControlTests(unittest.TestCase):
                 self.assertEqual(router.state.get_run(run.id).status, "cancelled")
                 self.assertEqual(router.state.get_remote_agent(agent.id).status, "idle")
                 self.assertIn(run.id, lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_cancel_does_not_block_event_loop_during_grace_period(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                await router.handle(message("/new repo=agent helper"))
+                agent = router.state.list_remote_agents()[0]
+                run = router.state.create_run(
+                    agent_id=agent.id,
+                    chat_id="oc_chat",
+                    message_id="om_run",
+                    repo_alias="agent",
+                    repo_path=Path("/tmp/agent"),
+                    codex_session_id="codex-new",
+                    prompt="long task",
+                )
+                router.state.mark_run_running(run.id, 999999)
+                router.state.touch_remote_agent(agent.id, status="running", last_run_id=run.id)
+
+                ticks = 0
+
+                async def fake_terminate(pid, grace_seconds=0.2):
+                    await asyncio.sleep(0.03)
+
+                async def heartbeat():
+                    nonlocal ticks
+                    end = asyncio.get_running_loop().time() + 0.05
+                    while asyncio.get_running_loop().time() < end:
+                        ticks += 1
+                        await asyncio.sleep(0.005)
+
+                original = run_manager_module.terminate_process_group
+                try:
+                    run_manager_module.terminate_process_group = fake_terminate
+                    await asyncio.gather(router.handle(message("/cancel")), heartbeat())
+                finally:
+                    run_manager_module.terminate_process_group = original
+
+                self.assertGreater(ticks, 1)
+                self.assertEqual(router.state.get_run(run.id).status, "cancelled")
 
         asyncio.run(run())
 
@@ -1083,6 +1221,41 @@ class RemoteControlTests(unittest.TestCase):
 
                 self.assertEqual(len(slow_runner.calls), 1)
                 self.assertTrue(any("还在处理" in reply for _, reply in lark.replies))
+
+        asyncio.run(run())
+
+    def test_concurrent_new_only_starts_one_run_for_same_binding(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                slow_runner = SlowCodexRunner()
+                router.handlers.run_manager.codex_runner = slow_runner
+
+                await asyncio.gather(
+                    router.handle(message("/new agent helper-one first task", message_id="om_first")),
+                    router.handle(message("/new agent helper-two second task", message_id="om_second")),
+                )
+
+                self.assertEqual(len(slow_runner.calls), 1)
+                self.assertEqual(len(router.state.list_remote_agents()), 1)
+                self.assertTrue(any("正在创建线上专员" in reply for _, reply in lark.replies))
+
+        asyncio.run(run())
+
+    def test_concurrent_new_allows_different_chats(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                slow_runner = SlowCodexRunner()
+                router.handlers.run_manager.codex_runner = slow_runner
+
+                await asyncio.gather(
+                    router.handle(message("/new agent helper-one first task", chat="oc_one", message_id="om_one")),
+                    router.handle(message("/new agent helper-two second task", chat="oc_two", message_id="om_two")),
+                )
+
+                self.assertEqual(len(slow_runner.calls), 2)
+                self.assertEqual(len(router.state.list_remote_agents()), 2)
 
         asyncio.run(run())
 

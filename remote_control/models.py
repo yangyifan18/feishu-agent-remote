@@ -155,6 +155,7 @@ class RunRecord:
     finished_at: str | None
     runtime: str = "codex"
     runtime_session_id: str | None = None
+    thread_key: str | None = None
 
     def __post_init__(self) -> None:
         if self.runtime_session_id is None:

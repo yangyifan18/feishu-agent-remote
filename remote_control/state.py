@@ -10,6 +10,20 @@ from pathlib import Path
 from .models import Confirmation, RemoteAgent, RunRecord, SessionBinding
 
 
+_COLUMN_MIGRATIONS: dict[tuple[str, str], str] = {
+    ("sessions", "agent_id"): "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
+    ("sessions", "runtime"): "ALTER TABLE sessions ADD COLUMN runtime TEXT DEFAULT 'codex'",
+    ("sessions", "runtime_session_id"): "ALTER TABLE sessions ADD COLUMN runtime_session_id TEXT",
+    ("remote_agents", "last_run_id"): "ALTER TABLE remote_agents ADD COLUMN last_run_id TEXT",
+    ("remote_agents", "last_error"): "ALTER TABLE remote_agents ADD COLUMN last_error TEXT",
+    ("remote_agents", "runtime"): "ALTER TABLE remote_agents ADD COLUMN runtime TEXT DEFAULT 'codex'",
+    ("remote_agents", "runtime_session_id"): "ALTER TABLE remote_agents ADD COLUMN runtime_session_id TEXT",
+    ("runs", "runtime"): "ALTER TABLE runs ADD COLUMN runtime TEXT DEFAULT 'codex'",
+    ("runs", "runtime_session_id"): "ALTER TABLE runs ADD COLUMN runtime_session_id TEXT",
+    ("runs", "thread_key"): "ALTER TABLE runs ADD COLUMN thread_key TEXT",
+}
+
+
 class StateStore:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
@@ -43,9 +57,9 @@ class StateStore:
                 )
                 """
             )
-            self._ensure_column(conn, "sessions", "agent_id", "TEXT")
-            self._ensure_column(conn, "sessions", "runtime", "TEXT DEFAULT 'codex'")
-            self._ensure_column(conn, "sessions", "runtime_session_id", "TEXT")
+            self._ensure_column(conn, "sessions", "agent_id")
+            self._ensure_column(conn, "sessions", "runtime")
+            self._ensure_column(conn, "sessions", "runtime_session_id")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS confirmations (
@@ -77,10 +91,10 @@ class StateStore:
                 )
                 """
             )
-            self._ensure_column(conn, "remote_agents", "last_run_id", "TEXT")
-            self._ensure_column(conn, "remote_agents", "last_error", "TEXT")
-            self._ensure_column(conn, "remote_agents", "runtime", "TEXT DEFAULT 'codex'")
-            self._ensure_column(conn, "remote_agents", "runtime_session_id", "TEXT")
+            self._ensure_column(conn, "remote_agents", "last_run_id")
+            self._ensure_column(conn, "remote_agents", "last_error")
+            self._ensure_column(conn, "remote_agents", "runtime")
+            self._ensure_column(conn, "remote_agents", "runtime_session_id")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -102,13 +116,23 @@ class StateStore:
                 )
                 """
             )
-            self._ensure_column(conn, "runs", "runtime", "TEXT DEFAULT 'codex'")
-            self._ensure_column(conn, "runs", "runtime_session_id", "TEXT")
+            self._ensure_column(conn, "runs", "runtime")
+            self._ensure_column(conn, "runs", "runtime_session_id")
+            self._ensure_column(conn, "runs", "thread_key")
 
-    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in columns:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str) -> None:
+        migration = _COLUMN_MIGRATIONS.get((table, column))
+        if migration is None:
+            raise ValueError(f"unknown column migration: {table}.{column}")
+        if not self._column_exists(conn, table, column):
+            conn.execute(migration)
+
+    def _column_exists(self, conn: sqlite3.Connection, table: str, column: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = ?",
+            (table, column),
+        ).fetchone()
+        return row is not None
 
     def upsert_session(
         self,
@@ -349,6 +373,7 @@ class StateStore:
         repo_path: Path,
         codex_session_id: str | None,
         prompt: str,
+        thread_key: str | None = None,
         status: str = "queued",
         runtime: str = "codex",
     ) -> RunRecord:
@@ -358,15 +383,16 @@ class StateStore:
             conn.execute(
                 """
                 INSERT INTO runs (
-                    id, agent_id, chat_id, message_id, repo_alias, repo_path,
+                    id, agent_id, chat_id, thread_key, message_id, repo_alias, repo_path,
                     codex_session_id, runtime, runtime_session_id, prompt, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     agent_id,
                     chat_id,
+                    thread_key,
                     message_id,
                     repo_alias,
                     str(repo_path),
@@ -443,6 +469,18 @@ class StateStore:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return self._row_to_run(row)
 
+    def get_running_run_for_binding(self, chat_id: str, thread_key: str) -> RunRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE chat_id = ? AND thread_key = ? AND status IN ('queued', 'running')
+                ORDER BY started_at DESC, created_at DESC LIMIT 1
+                """,
+                (chat_id, thread_key),
+            ).fetchone()
+        return self._row_to_run(row)
+
     def get_running_run_for_agent(self, agent_id: str) -> RunRecord | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -493,6 +531,7 @@ class StateStore:
             finished_at=row["finished_at"],
             runtime=_row_value(row, "runtime", "codex") or "codex",
             runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
+            thread_key=_row_value(row, "thread_key"),
         )
 
     def create_confirmation(
