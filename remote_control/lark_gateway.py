@@ -144,7 +144,7 @@ def _build_progress_card(progress: object) -> dict:
     runtime = str(getattr(progress, "runtime", "runtime"))
     text = _redact_progress_text(str(getattr(progress, "text", "")))[:800]
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {"title": {"tag": "plain_text", "content": f"{title} · {status}"}},
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**Run**: `{run_id}`\\n**Repo**: `{repo_alias}`\\n**Runtime**: `{runtime}`"}},

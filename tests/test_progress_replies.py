@@ -191,6 +191,7 @@ class ProgressReplyTests(unittest.TestCase):
         card = _build_progress_card(progress(text="token=abc123456789 bearer abcdefghijklmnop sk-abcdefghijklmnop"))
 
         rendered = str(card)
+        self.assertTrue(card["config"]["update_multi"])
         self.assertNotIn("abc123456789", rendered)
         self.assertNotIn("abcdefghijklmnop", rendered)
         self.assertIn("[REDACTED]", rendered)
