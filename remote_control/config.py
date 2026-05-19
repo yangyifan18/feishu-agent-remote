@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from .models import AgentTemplate, RemoteConfig, RepoConfig, RuntimeConfig
+from .models import AgentTemplate, RemoteConfig, RemoteFeatures, RepoConfig, RuntimeConfig
 
 
 DEFAULT_CONFIG_PATH = Path("~/.feishu-agent-remote/config.yaml").expanduser()
@@ -39,8 +39,74 @@ BUILTIN_AGENT_TEMPLATES = {
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
+    configs = load_workspace_configs(path)
+    default_workspace = next(iter(configs))
+    for config in configs.values():
+        if config.workspace_id == config.default_workspace:
+            return config
+    return configs[default_workspace]
+
+
+def load_workspace_configs(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, RemoteConfig]:
     config_path = Path(path).expanduser()
     raw = _read_yaml_subset(config_path)
+    workspaces = raw.get("workspaces")
+    if isinstance(workspaces, dict) and workspaces:
+        default_workspace = str(raw.get("default_workspace") or next(iter(workspaces))).strip() or "default"
+        configs: dict[str, RemoteConfig] = {}
+        for workspace_id, workspace_raw in workspaces.items():
+            if not isinstance(workspace_raw, dict):
+                raise ValueError(f"workspace {workspace_id!r} must be a mapping")
+            merged = _merge_workspace_raw(raw, workspace_raw)
+            configs[str(workspace_id)] = _remote_config_from_raw(
+                merged,
+                config_path,
+                workspace_id=str(workspace_id),
+                default_workspace=default_workspace,
+            )
+        if default_workspace not in configs:
+            raise ValueError(f"default_workspace {default_workspace!r} is not in workspaces")
+        return configs
+    return {
+        "default": _remote_config_from_raw(
+            raw,
+            config_path,
+            workspace_id="default",
+            default_workspace="default",
+        )
+    }
+
+
+def _merge_workspace_raw(root: dict[str, Any], workspace: dict[str, Any]) -> dict[str, Any]:
+    merged = {key: value for key, value in root.items() if key not in {"workspaces", "default_workspace"}}
+    if "shared_repos" in root and "repos" not in merged:
+        merged["repos"] = root["shared_repos"]
+    if "shared_runtimes" in root and "runtimes" not in merged:
+        merged["runtimes"] = root["shared_runtimes"]
+    merged_features = {}
+    if isinstance(root.get("features"), dict):
+        merged_features.update(root["features"])
+    for key, value in workspace.items():
+        if key == "features" and isinstance(value, dict):
+            merged_features.update(value)
+        else:
+            merged[key] = value
+    if merged_features:
+        merged["features"] = merged_features
+    if "repos" not in merged and "shared_repos" in root:
+        merged["repos"] = root["shared_repos"]
+    if "runtimes" not in merged and "shared_runtimes" in root:
+        merged["runtimes"] = root["shared_runtimes"]
+    return merged
+
+
+def _remote_config_from_raw(
+    raw: dict[str, Any],
+    config_path: Path,
+    *,
+    workspace_id: str,
+    default_workspace: str,
+) -> RemoteConfig:
     owner = str(raw.get("owner_open_id", "")).strip()
     if not owner:
         raise ValueError("config requires owner_open_id")
@@ -76,6 +142,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
     default_sandbox = (codex_runtime.sandbox if codex_runtime and codex_runtime.sandbox else str(raw.get("default_sandbox", "workspace-write")))
 
     agent_templates = _agent_templates(raw)
+    features = _features(raw.get("features") or {})
 
     return RemoteConfig(
         owner_open_id=owner,
@@ -91,6 +158,23 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> RemoteConfig:
         default_runtime=default_runtime,
         runtimes=runtimes,
         agent_templates=agent_templates,
+        workspace_id=workspace_id,
+        display_name=_optional_str(raw.get("display_name")),
+        lark_cli_args=_tuple_str(raw.get("lark_cli_args")),
+        features=features,
+        default_workspace=default_workspace,
+    )
+
+
+def _features(raw: object) -> RemoteFeatures:
+    if not isinstance(raw, dict):
+        raw = {}
+    return RemoteFeatures(
+        progress_replies=bool(raw.get("progress_replies", False)),
+        card_replies=bool(raw.get("card_replies", False)),
+        runtime_streaming=bool(raw.get("runtime_streaming", False)),
+        multi_workspace=bool(raw.get("multi_workspace", False)),
+        card_update_min_interval_seconds=float(raw.get("card_update_min_interval_seconds", 5.0)),
     )
 
 

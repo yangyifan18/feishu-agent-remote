@@ -37,6 +37,8 @@ Feishu Agent Remote turns that flow into a chat-native command console.
 - **Feishu-first remote control**: private chat or configured group mentions can drive local work.
 - **Online helpers**: create named remote agents with `/new`, list them with `/agents`, switch with `/attach`.
 - **Persistent runtime sessions**: follow-up messages resume the bound Codex or Claude session instead of starting over.
+- **Progress updates**: opt in to lifecycle text replies, Feishu interactive cards, and runtime streaming summaries.
+- **Multi-workspace ready**: one local service can supervise multiple Feishu/Lark bot profiles with isolated auth, repos, sessions, runs, and approvals.
 - **Repo allowlist**: only configured repositories can be accessed.
 - **Owner-only by default**: ignore commands from unauthorized users.
 - **Approval-gated user sends**: `/send` creates a confirmation; `/approve` performs the actual user-identity send.
@@ -52,6 +54,7 @@ Current backend:
 - Feishu/Lark event input: `lark-cli event consume im.message.receive_v1 --as bot`
 - Feishu/Lark replies: `lark-cli im +messages-reply --as bot`
 - Local agent runtimes: Codex CLI and Claude Code CLI
+- Optional UI mode: text progress replies or Feishu interactive progress cards
 - State store: SQLite
 - Config: local YAML-style file
 
@@ -117,6 +120,12 @@ lark_cli_bin: lark-cli
 bot_names:
   - your-bot-name
 
+features:
+  progress_replies: false
+  card_replies: false
+  runtime_streaming: false
+  multi_workspace: false
+
 runtimes:
   codex:
     type: codex
@@ -139,6 +148,45 @@ agent_templates:
 `bot_names` should match the display name or mention text of your own Feishu/Lark bot. Pick any name you like; it is not fixed by this project.
 
 If your Codex CLI needs a profile, set `runtimes.codex.profile` to `fastrelay`. To start a Claude helper, use `/new runtime=claude <repo> <title> [task]`. To use a role template, use `/new template=reviewer <repo> <title> [task]`.
+
+Optional progress features are disabled by default. Enable them gradually:
+
+```yaml
+features:
+  progress_replies: true   # lifecycle text/card updates
+  card_replies: false      # true = Feishu interactive card, fallback to text on failure
+  runtime_streaming: false # true = show parsed assistant chunks before final result
+```
+
+For multiple Feishu/Lark workspaces or bot apps, use separate `lark-cli` profiles and workspace-scoped config:
+
+```yaml
+default_workspace: personal
+shared_repos:
+  agent: /Users/you/Code/feishu-agent-remote
+
+workspaces:
+  personal:
+    owner_open_id: ou_personal
+    authorized_open_ids:
+      - ou_personal
+    default_repo: agent
+    lark_cli_args:
+      - --profile
+      - personal
+    features:
+      multi_workspace: true
+  team:
+    owner_open_id: ou_team
+    authorized_open_ids:
+      - ou_team
+    default_repo: agent
+    lark_cli_args:
+      - --profile
+      - team
+    features:
+      multi_workspace: true
+```
 
 ### 5. Optional: migrate legacy config and install launchd
 

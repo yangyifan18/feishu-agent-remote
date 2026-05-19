@@ -21,6 +21,9 @@ _COLUMN_MIGRATIONS: dict[tuple[str, str], str] = {
     ("runs", "runtime"): "ALTER TABLE runs ADD COLUMN runtime TEXT DEFAULT 'codex'",
     ("runs", "runtime_session_id"): "ALTER TABLE runs ADD COLUMN runtime_session_id TEXT",
     ("runs", "thread_key"): "ALTER TABLE runs ADD COLUMN thread_key TEXT",
+    ("remote_agents", "workspace_id"): "ALTER TABLE remote_agents ADD COLUMN workspace_id TEXT DEFAULT 'default'",
+    ("runs", "workspace_id"): "ALTER TABLE runs ADD COLUMN workspace_id TEXT DEFAULT 'default'",
+    ("confirmations", "workspace_id"): "ALTER TABLE confirmations ADD COLUMN workspace_id TEXT DEFAULT 'default'",
 }
 
 
@@ -95,6 +98,7 @@ class StateStore:
             self._ensure_column(conn, "remote_agents", "last_error")
             self._ensure_column(conn, "remote_agents", "runtime")
             self._ensure_column(conn, "remote_agents", "runtime_session_id")
+            self._ensure_column(conn, "remote_agents", "workspace_id")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -119,6 +123,8 @@ class StateStore:
             self._ensure_column(conn, "runs", "runtime")
             self._ensure_column(conn, "runs", "runtime_session_id")
             self._ensure_column(conn, "runs", "thread_key")
+            self._ensure_column(conn, "runs", "workspace_id")
+            self._ensure_column(conn, "confirmations", "workspace_id")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS binding_reservations (
@@ -127,6 +133,60 @@ class StateStore:
                     run_id TEXT NOT NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (chat_id, thread_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS binding_reservations_v2 (
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    chat_id TEXT NOT NULL,
+                    thread_key TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (workspace_id, chat_id, thread_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions_v2 (
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    chat_id TEXT NOT NULL,
+                    thread_key TEXT NOT NULL,
+                    agent_id TEXT,
+                    repo_alias TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    codex_session_id TEXT NOT NULL,
+                    runtime TEXT DEFAULT 'codex',
+                    runtime_session_id TEXT,
+                    status TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (workspace_id, chat_id, thread_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO sessions_v2 (
+                    workspace_id, chat_id, thread_key, agent_id, repo_alias, repo_path,
+                    codex_session_id, runtime, runtime_session_id, status, updated_at
+                )
+                SELECT 'default', chat_id, thread_key, agent_id, repo_alias, repo_path,
+                       codex_session_id, runtime, runtime_session_id, status, updated_at
+                FROM sessions
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_replies (
+                    run_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    mode TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    card_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -155,17 +215,18 @@ class StateStore:
         status: str = "idle",
         agent_id: str | None = None,
         runtime: str = "codex",
+        workspace_id: str = "default",
     ) -> None:
         runtime_session_id = codex_session_id
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions (
-                    chat_id, thread_key, agent_id, repo_alias, repo_path, codex_session_id,
+                INSERT INTO sessions_v2 (
+                    workspace_id, chat_id, thread_key, agent_id, repo_alias, repo_path, codex_session_id,
                     runtime, runtime_session_id, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, thread_key) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, chat_id, thread_key) DO UPDATE SET
                     agent_id=excluded.agent_id,
                     repo_alias=excluded.repo_alias,
                     repo_path=excluded.repo_path,
@@ -175,35 +236,41 @@ class StateStore:
                     status=excluded.status,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (chat_id, thread_key, agent_id, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status),
+                (workspace_id, chat_id, thread_key, agent_id, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status),
             )
 
-    def get_session(self, chat_id: str, thread_key: str) -> SessionBinding | None:
+    def get_session(self, chat_id: str, thread_key: str, workspace_id: str = "default") -> SessionBinding | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT sessions.*, remote_agents.title AS agent_title,
+                SELECT sessions_v2.*, remote_agents.title AS agent_title,
                        remote_agents.last_run_id AS agent_last_run_id,
                        remote_agents.last_error AS agent_last_error
-                FROM sessions
-                LEFT JOIN remote_agents ON remote_agents.id = sessions.agent_id
-                WHERE sessions.chat_id = ? AND sessions.thread_key = ?
+                FROM sessions_v2
+                LEFT JOIN remote_agents
+                    ON remote_agents.id = sessions_v2.agent_id
+                   AND remote_agents.workspace_id = sessions_v2.workspace_id
+                WHERE sessions_v2.workspace_id = ? AND sessions_v2.chat_id = ? AND sessions_v2.thread_key = ?
                 """,
-                (chat_id, thread_key),
+                (workspace_id, chat_id, thread_key),
             ).fetchone()
         return self._row_to_binding(row)
 
-    def list_sessions(self) -> list[SessionBinding]:
+    def list_sessions(self, workspace_id: str = "default") -> list[SessionBinding]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT sessions.*, remote_agents.title AS agent_title,
+                SELECT sessions_v2.*, remote_agents.title AS agent_title,
                        remote_agents.last_run_id AS agent_last_run_id,
                        remote_agents.last_error AS agent_last_error
-                FROM sessions
-                LEFT JOIN remote_agents ON remote_agents.id = sessions.agent_id
-                ORDER BY sessions.updated_at DESC LIMIT 20
-                """
+                FROM sessions_v2
+                LEFT JOIN remote_agents
+                    ON remote_agents.id = sessions_v2.agent_id
+                   AND remote_agents.workspace_id = sessions_v2.workspace_id
+                WHERE sessions_v2.workspace_id = ?
+                ORDER BY sessions_v2.updated_at DESC LIMIT 20
+                """,
+                (workspace_id,),
             ).fetchall()
         return [self._row_to_binding(row) for row in rows if row is not None]
 
@@ -223,6 +290,7 @@ class StateStore:
             last_error=row["agent_last_error"],
             runtime=_row_value(row, "runtime", "codex") or "codex",
             runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
+            workspace_id=_row_value(row, "workspace_id", "default") or "default",
         )
 
     def create_remote_agent(
@@ -235,6 +303,7 @@ class StateStore:
         thread_key: str,
         status: str = "idle",
         runtime: str = "codex",
+        workspace_id: str = "default",
     ) -> RemoteAgent:
         runtime_session_id = codex_session_id
         agent_id = "rc_" + uuid.uuid4().hex[:8]
@@ -243,39 +312,45 @@ class StateStore:
                 """
                 INSERT INTO remote_agents (
                     id, title, repo_alias, repo_path, codex_session_id, runtime,
-                    runtime_session_id, status, chat_id, thread_key
+                    runtime_session_id, status, chat_id, thread_key, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (agent_id, title, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status, chat_id, thread_key),
+                (agent_id, title, repo_alias, str(repo_path), codex_session_id, runtime, runtime_session_id, status, chat_id, thread_key, workspace_id),
             )
         agent = self.get_remote_agent(agent_id)
         if agent is None:
             raise RuntimeError("failed to create remote agent")
         return agent
 
-    def get_remote_agent(self, agent_id: str) -> RemoteAgent | None:
+    def get_remote_agent(self, agent_id: str, workspace_id: str | None = None) -> RemoteAgent | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM remote_agents WHERE id = ?", (agent_id,)).fetchone()
+            if workspace_id is None:
+                row = conn.execute("SELECT * FROM remote_agents WHERE id = ?", (agent_id,)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM remote_agents WHERE id = ? AND workspace_id = ?",
+                    (agent_id, workspace_id),
+                ).fetchone()
         return self._row_to_remote_agent(row)
 
-    def list_remote_agents(self, limit: int = 20) -> list[RemoteAgent]:
+    def list_remote_agents(self, limit: int = 20, workspace_id: str = "default") -> list[RemoteAgent]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM remote_agents ORDER BY updated_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM remote_agents WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ?",
+                (workspace_id, limit),
             ).fetchall()
         return [self._row_to_remote_agent(row) for row in rows if row is not None]
 
-    def rename_remote_agent(self, agent_id: str, title: str) -> RemoteAgent | None:
+    def rename_remote_agent(self, agent_id: str, title: str, workspace_id: str = "default") -> RemoteAgent | None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE remote_agents SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (title, agent_id),
+                "UPDATE remote_agents SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+                (title, agent_id, workspace_id),
             )
-        return self.get_remote_agent(agent_id)
+        return self.get_remote_agent(agent_id, workspace_id)
 
-    def delete_remote_agents(self, agent_ids: list[str]) -> list[RemoteAgent]:
+    def delete_remote_agents(self, agent_ids: list[str], workspace_id: str = "default") -> list[RemoteAgent]:
         unique_ids = list(dict.fromkeys(agent_id.strip() for agent_id in agent_ids if agent_id.strip()))
         if not unique_ids:
             return []
@@ -283,17 +358,17 @@ class StateStore:
         placeholders = ", ".join("?" for _ in unique_ids)
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM remote_agents WHERE id IN ({placeholders})",
-                unique_ids,
+                f"SELECT * FROM remote_agents WHERE workspace_id = ? AND id IN ({placeholders})",
+                [workspace_id, *unique_ids],
             ).fetchall()
             agents = [self._row_to_remote_agent(row) for row in rows if row is not None]
             conn.execute(
-                f"DELETE FROM sessions WHERE agent_id IN ({placeholders})",
-                unique_ids,
+                f"DELETE FROM sessions_v2 WHERE workspace_id = ? AND agent_id IN ({placeholders})",
+                [workspace_id, *unique_ids],
             )
             conn.execute(
-                f"DELETE FROM remote_agents WHERE id IN ({placeholders})",
-                unique_ids,
+                f"DELETE FROM remote_agents WHERE workspace_id = ? AND id IN ({placeholders})",
+                [workspace_id, *unique_ids],
             )
 
         deleted = {agent.id: agent for agent in agents if agent is not None}
@@ -306,6 +381,7 @@ class StateStore:
         last_run_id: str | None = None,
         last_error: str | None = None,
         clear_last_error: bool = False,
+        workspace_id: str = "default",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -319,24 +395,24 @@ class StateStore:
                         ELSE last_error
                     END,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND workspace_id = ?
                 """,
-                (status, last_run_id, clear_last_error, last_error, last_error, agent_id),
+                (status, last_run_id, clear_last_error, last_error, last_error, agent_id, workspace_id),
             )
 
 
-    def update_remote_agent_repo(self, agent_id: str, repo_alias: str, repo_path: Path) -> None:
+    def update_remote_agent_repo(self, agent_id: str, repo_alias: str, repo_path: Path, workspace_id: str = "default") -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE remote_agents
                 SET repo_alias = ?, repo_path = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND workspace_id = ?
                 """,
-                (repo_alias, str(repo_path), agent_id),
+                (repo_alias, str(repo_path), agent_id, workspace_id),
             )
 
-    def update_remote_agent_session(self, agent_id: str, codex_session_id: str, runtime: str | None = None) -> None:
+    def update_remote_agent_session(self, agent_id: str, codex_session_id: str, runtime: str | None = None, workspace_id: str = "default") -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -345,9 +421,9 @@ class StateStore:
                     runtime = COALESCE(?, runtime),
                     runtime_session_id = ?,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND workspace_id = ?
                 """,
-                (codex_session_id, runtime, codex_session_id, agent_id),
+                (codex_session_id, runtime, codex_session_id, agent_id, workspace_id),
             )
 
     def _row_to_remote_agent(self, row: sqlite3.Row | None) -> RemoteAgent | None:
@@ -368,11 +444,15 @@ class StateStore:
             last_error=row["last_error"],
             runtime=_row_value(row, "runtime", "codex") or "codex",
             runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
+            workspace_id=_row_value(row, "workspace_id", "default") or "default",
         )
 
-    def close_session(self, chat_id: str, thread_key: str) -> None:
+    def close_session(self, chat_id: str, thread_key: str, workspace_id: str = "default") -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE chat_id = ? AND thread_key = ?", (chat_id, thread_key))
+            conn.execute(
+                "DELETE FROM sessions_v2 WHERE workspace_id = ? AND chat_id = ? AND thread_key = ?",
+                (workspace_id, chat_id, thread_key),
+            )
 
     def create_run(
         self,
@@ -387,6 +467,7 @@ class StateStore:
         thread_key: str | None = None,
         status: str = "queued",
         runtime: str = "codex",
+        workspace_id: str = "default",
     ) -> RunRecord:
         run_id = "run_" + uuid.uuid4().hex[:8]
         with self._connect() as conn:
@@ -403,6 +484,7 @@ class StateStore:
                 prompt=prompt,
                 status=status,
                 runtime=runtime,
+                workspace_id=workspace_id,
             )
         run = self.get_run(run_id)
         if run is None:
@@ -424,6 +506,7 @@ class StateStore:
         prompt: str,
         status: str,
         runtime: str,
+        workspace_id: str,
     ) -> None:
         runtime_session_id = codex_session_id
         conn.execute(
@@ -431,8 +514,9 @@ class StateStore:
             INSERT INTO runs (
                 id, agent_id, chat_id, thread_key, message_id, repo_alias, repo_path,
                 codex_session_id, runtime, runtime_session_id, prompt, status
+                , workspace_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -447,6 +531,7 @@ class StateStore:
                 runtime_session_id,
                 _redact_secrets(prompt),
                 status,
+                workspace_id,
             ),
         )
 
@@ -462,24 +547,25 @@ class StateStore:
         codex_session_id: str | None = None,
         prompt: str,
         runtime: str = "codex",
+        workspace_id: str = "default",
     ) -> RunRecord:
         run_id = "run_" + uuid.uuid4().hex[:8]
         with self._connect() as conn:
             try:
                 conn.execute(
                     """
-                    INSERT INTO binding_reservations (chat_id, thread_key, run_id)
-                    VALUES (?, ?, ?)
+                    INSERT INTO binding_reservations_v2 (workspace_id, chat_id, thread_key, run_id)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (chat_id, thread_key, run_id),
+                    (workspace_id, chat_id, thread_key, run_id),
                 )
             except sqlite3.IntegrityError as exc:
                 existing_row = conn.execute(
                     """
-                    SELECT run_id FROM binding_reservations
-                    WHERE chat_id = ? AND thread_key = ?
+                    SELECT run_id FROM binding_reservations_v2
+                    WHERE workspace_id = ? AND chat_id = ? AND thread_key = ?
                     """,
-                    (chat_id, thread_key),
+                    (workspace_id, chat_id, thread_key),
                 ).fetchone()
                 raise BindingAlreadyReserved(existing_row["run_id"] if existing_row else None) from exc
             self._insert_run(
@@ -495,23 +581,24 @@ class StateStore:
                 prompt=prompt,
                 status="queued",
                 runtime=runtime,
+                workspace_id=workspace_id,
             )
         run = self.get_run(run_id)
         if run is None:
             raise RuntimeError("failed to create reserved run")
         return run
 
-    def release_binding_reservation(self, chat_id: str, thread_key: str, run_id: str | None = None) -> None:
+    def release_binding_reservation(self, chat_id: str, thread_key: str, run_id: str | None = None, workspace_id: str = "default") -> None:
         with self._connect() as conn:
             if run_id:
                 conn.execute(
-                    "DELETE FROM binding_reservations WHERE chat_id = ? AND thread_key = ? AND run_id = ?",
-                    (chat_id, thread_key, run_id),
+                    "DELETE FROM binding_reservations_v2 WHERE workspace_id = ? AND chat_id = ? AND thread_key = ? AND run_id = ?",
+                    (workspace_id, chat_id, thread_key, run_id),
                 )
             else:
                 conn.execute(
-                    "DELETE FROM binding_reservations WHERE chat_id = ? AND thread_key = ?",
-                    (chat_id, thread_key),
+                    "DELETE FROM binding_reservations_v2 WHERE workspace_id = ? AND chat_id = ? AND thread_key = ?",
+                    (workspace_id, chat_id, thread_key),
                 )
 
     def attach_run_to_agent(
@@ -520,6 +607,7 @@ class StateStore:
         agent_id: str,
         codex_session_id: str | None = None,
         runtime: str | None = None,
+        workspace_id: str = "default",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -529,9 +617,9 @@ class StateStore:
                     codex_session_id = COALESCE(?, codex_session_id),
                     runtime = COALESCE(?, runtime),
                     runtime_session_id = COALESCE(?, runtime_session_id)
-                WHERE id = ?
+                WHERE id = ? AND workspace_id = ?
                 """,
-                (agent_id, codex_session_id, runtime, codex_session_id, run_id),
+                (agent_id, codex_session_id, runtime, codex_session_id, run_id, workspace_id),
             )
 
     def mark_run_running(self, run_id: str, pid: int | None) -> None:
@@ -576,43 +664,46 @@ class StateStore:
         return self._row_to_run(row)
 
     def get_running_run_for_binding(self, chat_id: str, thread_key: str) -> RunRecord | None:
+        return self.get_running_run_for_binding_in_workspace(chat_id, thread_key, "default")
+
+    def get_running_run_for_binding_in_workspace(self, chat_id: str, thread_key: str, workspace_id: str = "default") -> RunRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM runs
-                WHERE chat_id = ? AND thread_key = ? AND status IN ('queued', 'running')
+                WHERE workspace_id = ? AND chat_id = ? AND thread_key = ? AND status IN ('queued', 'running')
                 ORDER BY started_at DESC, created_at DESC LIMIT 1
                 """,
-                (chat_id, thread_key),
+                (workspace_id, chat_id, thread_key),
             ).fetchone()
         return self._row_to_run(row)
 
-    def get_running_run_for_agent(self, agent_id: str) -> RunRecord | None:
+    def get_running_run_for_agent(self, agent_id: str, workspace_id: str = "default") -> RunRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM runs
-                WHERE agent_id = ? AND status IN ('queued', 'running')
+                WHERE workspace_id = ? AND agent_id = ? AND status IN ('queued', 'running')
                 ORDER BY started_at DESC, created_at DESC LIMIT 1
                 """,
-                (agent_id,),
+                (workspace_id, agent_id),
             ).fetchone()
         return self._row_to_run(row)
 
-    def list_runs(self, agent_id: str | None = None, limit: int = 10) -> list[RunRecord]:
+    def list_runs(self, agent_id: str | None = None, limit: int = 10, workspace_id: str = "default") -> list[RunRecord]:
         with self._connect() as conn:
             if agent_id:
                 rows = conn.execute(
                     """
-                    SELECT * FROM runs WHERE agent_id = ?
+                    SELECT * FROM runs WHERE workspace_id = ? AND agent_id = ?
                     ORDER BY created_at DESC LIMIT ?
                     """,
-                    (agent_id, limit),
+                    (workspace_id, agent_id, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
+                    "SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (workspace_id, limit),
                 ).fetchall()
         return [self._row_to_run(row) for row in rows if row is not None]
 
@@ -638,6 +729,7 @@ class StateStore:
             runtime=_row_value(row, "runtime", "codex") or "codex",
             runtime_session_id=_row_value(row, "runtime_session_id") or row["codex_session_id"],
             thread_key=_row_value(row, "thread_key"),
+            workspace_id=_row_value(row, "workspace_id", "default") or "default",
         )
 
     def create_confirmation(
@@ -647,29 +739,36 @@ class StateStore:
         chat_id: str,
         message_id: str,
         payload: dict,
+        workspace_id: str = "default",
     ) -> Confirmation:
         confirmation_id = uuid.uuid4().hex[:8]
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO confirmations (id, action, requester_id, chat_id, message_id, payload, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                INSERT INTO confirmations (id, action, requester_id, chat_id, message_id, payload, status, workspace_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
-                (confirmation_id, action, requester_id, chat_id, message_id, json.dumps(payload, ensure_ascii=False)),
+                (confirmation_id, action, requester_id, chat_id, message_id, json.dumps(payload, ensure_ascii=False), workspace_id),
             )
-        return Confirmation(confirmation_id, action, requester_id, chat_id, message_id, payload, "pending")
+        return Confirmation(confirmation_id, action, requester_id, chat_id, message_id, payload, "pending", workspace_id)
 
-    def get_confirmation(self, confirmation_id: str) -> Confirmation | None:
+    def get_confirmation(self, confirmation_id: str, workspace_id: str | None = None) -> Confirmation | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM confirmations WHERE id = ?",
-                (confirmation_id,),
-            ).fetchone()
+            if workspace_id is None:
+                row = conn.execute(
+                    "SELECT * FROM confirmations WHERE id = ?",
+                    (confirmation_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM confirmations WHERE id = ? AND workspace_id = ?",
+                    (confirmation_id, workspace_id),
+                ).fetchone()
         return self._row_to_confirmation(row)
 
-    def list_confirmations(self, requester_id: str | None = None, chat_id: str | None = None) -> list[Confirmation]:
-        query = "SELECT * FROM confirmations WHERE status = 'pending'"
-        params: list[str] = []
+    def list_confirmations(self, requester_id: str | None = None, chat_id: str | None = None, workspace_id: str = "default") -> list[Confirmation]:
+        query = "SELECT * FROM confirmations WHERE status = 'pending' AND workspace_id = ?"
+        params: list[str] = [workspace_id]
         if requester_id:
             query += " AND requester_id = ?"
             params.append(requester_id)
@@ -681,12 +780,54 @@ class StateStore:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_confirmation(row) for row in rows if row is not None]
 
-    def mark_confirmation(self, confirmation_id: str, status: str) -> None:
+    def mark_confirmation(self, confirmation_id: str, status: str, workspace_id: str | None = None) -> None:
+        with self._connect() as conn:
+            if workspace_id is None:
+                conn.execute(
+                    "UPDATE confirmations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (status, confirmation_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE confirmations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+                    (status, confirmation_id, workspace_id),
+                )
+
+    def save_run_reply(self, run_id: str, handle: object) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE confirmations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (status, confirmation_id),
+                """
+                INSERT INTO run_replies (run_id, workspace_id, mode, message_id, card_id)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    workspace_id=excluded.workspace_id,
+                    mode=excluded.mode,
+                    message_id=excluded.message_id,
+                    card_id=excluded.card_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    run_id,
+                    getattr(handle, "workspace_id"),
+                    getattr(handle, "mode"),
+                    getattr(handle, "message_id"),
+                    getattr(handle, "card_id", None),
+                ),
             )
+
+    def get_run_reply(self, run_id: str):
+        from .replies import ReplyHandle
+
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM run_replies WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        return ReplyHandle(
+            mode=row["mode"],
+            workspace_id=row["workspace_id"],
+            message_id=row["message_id"],
+            card_id=row["card_id"],
+        )
 
     def check_writable(self) -> bool:
         try:
@@ -709,6 +850,7 @@ class StateStore:
             message_id=row["message_id"],
             payload=json.loads(row["payload"]),
             status=row["status"],
+            workspace_id=_row_value(row, "workspace_id", "default") or "default",
         )
 
 

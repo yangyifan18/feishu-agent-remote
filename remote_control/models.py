@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +45,20 @@ class RemoteConfig:
     default_runtime: str = "codex"
     runtimes: dict[str, RuntimeConfig] | None = None
     agent_templates: dict[str, AgentTemplate] | None = None
+    workspace_id: str = "default"
+    display_name: str | None = None
+    lark_cli_args: tuple[str, ...] = ()
+    features: "RemoteFeatures" | None = None
+    default_workspace: str = "default"
+
+
+@dataclass(frozen=True)
+class RemoteFeatures:
+    progress_replies: bool = False
+    card_replies: bool = False
+    runtime_streaming: bool = False
+    multi_workspace: bool = False
+    card_update_min_interval_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +70,7 @@ class IncomingMessage:
     content: str
     thread_id: str | None = None
     root_message_id: str | None = None
+    workspace_id: str = "default"
 
     @property
     def thread_key(self) -> str:
@@ -74,6 +91,7 @@ class SessionBinding:
     last_error: str | None = None
     runtime: str = "codex"
     runtime_session_id: str | None = None
+    workspace_id: str = "default"
 
     def __post_init__(self) -> None:
         if self.runtime_session_id is None:
@@ -89,6 +107,7 @@ class Confirmation:
     message_id: str
     payload: dict
     status: str
+    workspace_id: str = "default"
 
 
 @dataclass(frozen=True)
@@ -130,6 +149,7 @@ class RemoteAgent:
     last_error: str | None = None
     runtime: str = "codex"
     runtime_session_id: str | None = None
+    workspace_id: str = "default"
 
     def __post_init__(self) -> None:
         if self.runtime_session_id is None:
@@ -156,6 +176,7 @@ class RunRecord:
     runtime: str = "codex"
     runtime_session_id: str | None = None
     thread_key: str | None = None
+    workspace_id: str = "default"
 
     def __post_init__(self) -> None:
         if self.runtime_session_id is None:

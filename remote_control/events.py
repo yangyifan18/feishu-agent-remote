@@ -62,6 +62,7 @@ async def consume_events_forever(
     handle_event: EventHandler,
     logger: logging.Logger,
     *,
+    lark_cli_args: tuple[str, ...] = (),
     process_factory: ProcessFactory | None = None,
     sleeper: Sleeper = asyncio.sleep,
     clock: Clock = time.monotonic,
@@ -76,6 +77,7 @@ async def consume_events_forever(
         try:
             proc = await factory(
                 lark_cli_bin,
+                *lark_cli_args,
                 "event",
                 "consume",
                 "im.message.receive_v1",
