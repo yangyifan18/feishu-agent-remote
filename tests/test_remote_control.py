@@ -1262,6 +1262,24 @@ class RemoteControlTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_new_is_rejected_while_bound_agent_is_running_in_same_binding(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                await router.handle(message("/new repo=agent helper"))
+                slow_runner = SlowCodexRunner()
+                router.handlers.run_manager.codex_runner = slow_runner
+
+                task = asyncio.create_task(router.handle(message("long task", message_id="om_long")))
+                await asyncio.sleep(0)
+                await router.handle(message("/new agent replacement replace it", message_id="om_new"))
+                await task
+
+                self.assertEqual([call[0] for call in slow_runner.calls], ["resume"])
+                self.assertTrue(any("正在创建线上专员或处理任务" in reply for _, reply in lark.replies))
+
+        asyncio.run(run())
+
     def test_concurrent_fast_new_only_starts_one_run_for_same_binding(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:

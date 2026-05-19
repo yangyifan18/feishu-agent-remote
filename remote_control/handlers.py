@@ -142,6 +142,7 @@ class CommandHandlers:
                 runtime_session_id=binding.runtime_session_id or binding.codex_session_id,
                 prompt=prompt,
                 runtime=binding.runtime,
+                thread_key=_binding_key(msg),
             )
         except RunAlreadyActive as exc:
             await self.lark.reply(msg.message_id, f"当前线上专员还在处理上一条任务：{exc.run.id}。可用 `/runs` 查看，或 `/cancel` 取消。")

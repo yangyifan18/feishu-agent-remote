@@ -102,6 +102,7 @@ class RunManager:
         runtime_session_id: str,
         prompt: str,
         runtime: str = "codex",
+        thread_key: str | None = None,
     ) -> tuple[RunRecord, RuntimeRunResult]:
         async with self._lock_for_agent(agent_id):
             existing = self.running_for_agent(agent_id)
@@ -110,6 +111,7 @@ class RunManager:
             run = self.state.create_run(
                 agent_id=agent_id,
                 chat_id=chat_id,
+                thread_key=thread_key,
                 message_id=message_id,
                 repo_alias=repo_alias,
                 repo_path=repo_path,
@@ -164,6 +166,7 @@ class RunManager:
                 runtime_session_id=runtime_session_id,
                 prompt=prompt,
                 runtime=runtime,
+                thread_key=thread_key,
             )
         if thread_key:
             async with self._lock_for_binding(chat_id, thread_key):
