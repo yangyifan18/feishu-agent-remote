@@ -164,6 +164,7 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, "当前绑定缺少 Agent ID，请重新 `/attach <agent_id>`。")
             return
 
+        reporter = self._progress_reporter(msg)
         try:
             run, result = await self.run_manager.resume_agent(
                 agent_id=binding.agent_id,
@@ -176,7 +177,7 @@ class CommandHandlers:
                 runtime=binding.runtime,
                 thread_key=_binding_key(msg),
                 workspace_id=self._workspace_id(msg),
-                progress_reporter=self._progress_reporter(msg),
+                progress_reporter=reporter,
                 runtime_streaming=bool(self.config.features and self.config.features.runtime_streaming),
                 title=binding.title,
             )
@@ -184,7 +185,7 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, f"当前线上专员还在处理上一条任务：{exc.run.id}。可用 `/runs` 查看，或 `/cancel` 取消。")
             return
         self._update_binding_after_result(msg, binding, result)
-        if result.status != "cancelled":
+        if result.status != "cancelled" and reporter is None:
             await self.lark.reply(msg.message_id, result.summary)
 
     async def _status(self, msg: IncomingMessage, command: Command) -> None:
@@ -309,6 +310,7 @@ class CommandHandlers:
             "关键修改或产出、已运行验证、当前风险、下一步建议。不要修改文件。"
         )
         await self.lark.reply(msg.message_id, f"开始生成交接总结：{agent.title if agent else session_id}")
+        reporter = self._progress_reporter(msg)
         try:
             run, result = await self.run_manager.resume_session(
                 agent_id=agent.id if agent else None,
@@ -321,7 +323,7 @@ class CommandHandlers:
                 runtime=runtime,
                 thread_key=_binding_key(msg),
                 workspace_id=self._workspace_id(msg),
-                progress_reporter=self._progress_reporter(msg),
+                progress_reporter=reporter,
                 runtime_streaming=bool(self.config.features and self.config.features.runtime_streaming),
                 title=agent.title if agent else session_id,
             )
@@ -330,7 +332,7 @@ class CommandHandlers:
             return
         if agent:
             self._update_binding_after_result(msg, self._binding_from_agent(msg, agent), result)
-        if result.status != "cancelled":
+        if result.status != "cancelled" and reporter is None:
             await self.lark.reply(msg.message_id, result.summary)
 
     async def _detach(self, msg: IncomingMessage, command: Command) -> None:

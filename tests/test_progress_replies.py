@@ -3,11 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from remote_control.models import RemoteFeatures, RemoteConfig, RepoConfig
 from remote_control.progress import CardProgressReporter, RunProgress, TextProgressReporter
 from remote_control.replies import MessageRef, ReplyHandle
 from remote_control.run_manager import RunManager
 from remote_control.state import StateStore
+from remote_control.lark_gateway import LarkGateway, _build_progress_card
 
 
 class FakeReplyGateway:
@@ -65,6 +65,17 @@ class EventingRunner:
             if result is not None:
                 await result
         return {"session_id": session_id, "summary": "resume final", "status": "succeeded"}
+
+
+class FakeLarkCardGateway(LarkGateway):
+    def __init__(self, output):
+        super().__init__()
+        self.output = output
+        self.argv = []
+
+    async def _run_json(self, argv):
+        self.argv.append(argv)
+        return self.output
 
 
 class ProgressReplyTests(unittest.TestCase):
@@ -140,6 +151,30 @@ class ProgressReplyTests(unittest.TestCase):
                 self.assertEqual(handle.card_id, "om_card")
 
         asyncio.run(run())
+
+    def test_lark_gateway_card_create_requires_returned_card_or_message_id(self):
+        async def run():
+            ref = MessageRef(workspace_id="default", chat_id="oc", message_id="om_original", thread_key="chat:oc")
+            gateway = FakeLarkCardGateway({"data": {"message_id": "om_card"}})
+
+            handle = await gateway.create_progress_card(ref, progress(status="running", text="start"))
+
+            self.assertEqual(handle.mode, "card")
+            self.assertEqual(handle.message_id, "om_card")
+            self.assertEqual(handle.card_id, "om_card")
+
+            with self.assertRaises(RuntimeError):
+                await FakeLarkCardGateway({}).create_progress_card(ref, progress(status="running", text="start"))
+
+        asyncio.run(run())
+
+    def test_progress_card_redacts_secret_like_text(self):
+        card = _build_progress_card(progress(text="token=abc123456789 bearer abcdefghijklmnop sk-abcdefghijklmnop"))
+
+        rendered = str(card)
+        self.assertNotIn("abc123456789", rendered)
+        self.assertNotIn("abcdefghijklmnop", rendered)
+        self.assertIn("[REDACTED]", rendered)
 
     def test_run_manager_emits_lifecycle_progress(self):
         async def run():

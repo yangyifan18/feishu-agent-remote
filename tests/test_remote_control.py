@@ -15,6 +15,7 @@ from remote_control.config import load_config
 from remote_control.models import CodexSessionMeta
 from remote_control.models import AgentTemplate
 from remote_control.models import IncomingMessage
+from remote_control.replies import ReplyHandle
 from remote_control.router import RemoteRouter
 from remote_control.runtimes import RuntimeRegistry
 from remote_control.session_finder import RuntimeSessionFinder
@@ -165,6 +166,10 @@ class FakeLarkGateway:
 
     async def reply(self, message_id, text):
         self.replies.append((message_id, text))
+
+    async def reply_text(self, ref, text):
+        await self.reply(ref.message_id, text)
+        return ReplyHandle(mode="text", workspace_id=ref.workspace_id, message_id=ref.message_id)
 
     async def send_user_message(self, user_id, text):
         self.sent.append((user_id, text))
@@ -672,6 +677,21 @@ class RemoteControlTests(unittest.TestCase):
                 self.assertEqual(runner.calls[-1], ("resume", "codex-new", "/tmp/agent", "continue"))
                 self.assertIn("continued work", lark.replies[-1][1])
                 self.assertNotIn("继续处理当前 Codex session", [reply for _, reply in lark.replies])
+
+        asyncio.run(run())
+
+    def test_progress_replies_suppress_duplicate_final_handler_reply(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_progress_router(tmp)
+                await router.handle(message("/new repo=agent helper", message_id="om_new"))
+                lark.replies.clear()
+
+                await router.handle(message("continue", message_id="om_followup"))
+
+                continued = [reply for _, reply in lark.replies if "continued work" in reply]
+                self.assertEqual(len(continued), 1)
+                self.assertTrue(any("Run run_" in reply for _, reply in lark.replies))
 
         asyncio.run(run())
 
@@ -1522,6 +1542,29 @@ def make_router(tmp, lark=None):
     state = StateStore(Path(tmp) / "state.sqlite")
     runner = FakeCodexRunner()
     lark = lark or FakeLarkGateway()
+    return RemoteRouter(config, state, runner, lark, FakeSessionFinder()), runner, lark
+
+
+def make_progress_router(tmp):
+    config_path = Path(tmp) / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "owner_open_id: ou_owner",
+                "default_repo: agent",
+                "repos:",
+                "  agent: /tmp/agent",
+                "authorized_open_ids:",
+                "  - ou_owner",
+                "features:",
+                "  progress_replies: true",
+            ]
+        )
+    )
+    config = load_config(config_path)
+    state = StateStore(Path(tmp) / "state.sqlite")
+    runner = FakeCodexRunner()
+    lark = FakeLarkGateway()
     return RemoteRouter(config, state, runner, lark, FakeSessionFinder()), runner, lark
 
 

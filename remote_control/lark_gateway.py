@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 
 from .replies import MessageRef, ReplyHandle
 
@@ -52,8 +53,11 @@ class LarkGateway:
             ]
         )
         data = output.get("data") if isinstance(output, dict) else {}
-        message_id = str((data or {}).get("message_id") or ref.message_id)
-        return ReplyHandle(mode="card", workspace_id=ref.workspace_id, message_id=message_id, card_id=message_id)
+        message_id = str((data or {}).get("message_id") or output.get("message_id") or "")
+        card_id = str((data or {}).get("card_id") or output.get("card_id") or message_id)
+        if not card_id:
+            raise RuntimeError("lark-cli card create returned no message_id/card_id")
+        return ReplyHandle(mode="card", workspace_id=ref.workspace_id, message_id=message_id or ref.message_id, card_id=card_id)
 
     async def update_progress_card(self, handle: ReplyHandle, progress: object) -> None:
         if not handle.card_id:
@@ -138,7 +142,7 @@ def _build_progress_card(progress: object) -> dict:
     run_id = str(getattr(progress, "run_id", "run"))
     repo_alias = str(getattr(progress, "repo_alias", "repo"))
     runtime = str(getattr(progress, "runtime", "runtime"))
-    text = str(getattr(progress, "text", ""))[:800]
+    text = _redact_progress_text(str(getattr(progress, "text", "")))[:800]
     return {
         "config": {"wide_screen_mode": True},
         "header": {"title": {"tag": "plain_text", "content": f"{title} · {status}"}},
@@ -148,3 +152,20 @@ def _build_progress_card(progress: object) -> dict:
             {"tag": "div", "text": {"tag": "lark_md", "content": text or status}},
         ],
     }
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*([^\s]+)"),
+    re.compile(r"(?i)(bearer)\s+([A-Za-z0-9._~+/=-]{12,})"),
+    re.compile(r"\b(sk-[A-Za-z0-9_-]{16,})\b"),
+)
+
+
+def _redact_progress_text(text: str) -> str:
+    redacted = text
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups >= 2:
+            redacted = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]", redacted)
+        else:
+            redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
