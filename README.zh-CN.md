@@ -37,6 +37,8 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 - **飞书优先的远程控制**：私聊或群聊 @ bot 都能驱动本机 Agent 工作。
 - **线上专员**：用 `/new` 创建具名远程 Agent，用 `/agents` 查看，用 `/attach` 切换。
 - **持久 runtime session**：普通后续消息会恢复当前绑定的 Codex 或 Claude session，而不是每次重新开始。
+- **进度更新**：可选开启生命周期文本回复、飞书交互卡片，以及 runtime streaming 摘要。
+- **多 workspace 就绪**：一个本地服务可以管理多个飞书/Lark bot profile，并隔离授权、仓库、session、run 和确认单。
 - **Repo 白名单**：只允许访问配置过的仓库。
 - **默认 owner-only**：未授权用户的命令会被忽略。
 - **高影响操作确认**：`/send` 只创建确认单，`/approve` 后才会以 user 身份发送。
@@ -52,6 +54,7 @@ Feishu Agent Remote 把这些动作变成一个飞书里的远程命令台。
 - 飞书/Lark 事件输入：`lark-cli event consume im.message.receive_v1 --as bot`
 - 飞书/Lark 回复：`lark-cli im +messages-reply --as bot`
 - 本机 Agent runtime：Codex CLI 和 Claude Code CLI
+- 可选 UI 模式：文本进度回复或飞书交互式进度卡片
 - 状态存储：SQLite
 - 配置文件：本地 YAML 风格配置
 
@@ -117,6 +120,12 @@ lark_cli_bin: lark-cli
 bot_names:
   - your-bot-name
 
+features:
+  progress_replies: false
+  card_replies: false
+  runtime_streaming: false
+  multi_workspace: false
+
 runtimes:
   codex:
     type: codex
@@ -139,6 +148,45 @@ agent_templates:
 `bot_names` 应该填写你自己的飞书/Lark bot 展示名或群聊中的 @ 名称。这个名字由用户自己选择，不是项目固定值。
 
 如果你的 Codex CLI 需要 profile，把 `runtimes.codex.profile` 设置为 `fastrelay`。如果要启动 Claude 专员，用 `/new runtime=claude <repo> <title> [任务]`。如果要使用角色模板，用 `/new template=reviewer <repo> <title> [任务]`。
+
+进度能力默认关闭，建议逐步开启：
+
+```yaml
+features:
+  progress_replies: true   # 生命周期文本/卡片更新
+  card_replies: false      # true = 飞书交互卡片，失败自动 fallback 到文本
+  runtime_streaming: false # true = final 之前展示可解析的 assistant 增量
+```
+
+如果要接入多个飞书/Lark workspace 或多个 bot app，可以为 `lark-cli` 准备独立 profile，并使用 workspace 级配置：
+
+```yaml
+default_workspace: personal
+shared_repos:
+  agent: /Users/you/Code/feishu-agent-remote
+
+workspaces:
+  personal:
+    owner_open_id: ou_personal
+    authorized_open_ids:
+      - ou_personal
+    default_repo: agent
+    lark_cli_args:
+      - --profile
+      - personal
+    features:
+      multi_workspace: true
+  team:
+    owner_open_id: ou_team
+    authorized_open_ids:
+      - ou_team
+    default_repo: agent
+    lark_cli_args:
+      - --profile
+      - team
+    features:
+      multi_workspace: true
+```
 
 ### 5. 可选：迁移旧配置并安装 launchd
 

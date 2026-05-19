@@ -122,6 +122,28 @@ class EventReliabilityTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_event_consumer_passes_lark_cli_args_before_event_command(self):
+        async def run():
+            argv_seen = []
+
+            async def process_factory(*args, **kwargs):
+                argv_seen.append(args)
+                return FakeProcess()
+
+            await consume_events_forever(
+                "lark-cli",
+                lambda event: asyncio.sleep(0),
+                logging.getLogger("test"),
+                lark_cli_args=("--profile", "team"),
+                process_factory=process_factory,
+                sleeper=lambda _: asyncio.sleep(0),
+                max_cycles=1,
+            )
+
+            self.assertEqual(argv_seen[0][:5], ("lark-cli", "--profile", "team", "event", "consume"))
+
+        asyncio.run(run())
+
     def test_event_consumer_backs_off_when_process_factory_fails(self):
         async def run():
             sleeps = []

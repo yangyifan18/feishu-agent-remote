@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import CodexRunResult
+from .progress import RuntimeEvent, RuntimeEventCallback
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,13 @@ class CodexRunner:
         self.timeout_seconds = timeout_seconds
         self.profile = profile
 
-    async def start(self, repo_path: Path, prompt: str, on_started: Callable[[int], None] | None = None) -> CodexRunResult:
+    async def start(
+        self,
+        repo_path: Path,
+        prompt: str,
+        on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
+    ) -> CodexRunResult:
         return await self._run(
             [
                 *self._base_argv(),
@@ -42,13 +49,22 @@ class CodexRunner:
                 prompt,
             ],
             on_started=on_started,
+            on_event=on_event,
         )
 
-    async def resume(self, session_id: str, repo_path: Path, prompt: str, on_started: Callable[[int], None] | None = None) -> CodexRunResult:
+    async def resume(
+        self,
+        session_id: str,
+        repo_path: Path,
+        prompt: str,
+        on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
+    ) -> CodexRunResult:
         return await self._run(
             [*self._base_argv(), "exec", "resume", "--json", session_id, prompt],
             cwd=repo_path,
             on_started=on_started,
+            on_event=on_event,
         )
 
     def _base_argv(self) -> list[str]:
@@ -62,6 +78,7 @@ class CodexRunner:
         argv: list[str],
         cwd: Path | None = None,
         on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
     ) -> CodexRunResult:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -74,7 +91,10 @@ class CodexRunner:
         if on_started:
             on_started(proc.pid)
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
+            if on_event is None:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
+            else:
+                stdout, stderr = await asyncio.wait_for(_stream_process_output(proc, parse_codex_event_line, on_event), timeout=self.timeout_seconds)
         except TimeoutError:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -127,6 +147,34 @@ def parse_codex_jsonl(raw: str) -> ParsedCodexOutput:
     return ParsedCodexOutput(session_id=session_id, last_message=messages[-1] if messages else "")
 
 
+def parse_codex_event_line(line: str) -> RuntimeEvent | None:
+    if not line.strip():
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if event.get("type") == "session_meta":
+        payload = event.get("payload") or {}
+        session_id = payload.get("id")
+        if session_id:
+            return RuntimeEvent(type="session", text="", session_id=str(session_id))
+    if event.get("type") == "thread.started" and event.get("thread_id"):
+        return RuntimeEvent(type="session", text="", session_id=str(event["thread_id"]))
+    payload = event.get("payload") or {}
+    if payload.get("type") == "message" and payload.get("role") == "assistant":
+        text = _extract_text(payload.get("content") or [])
+        return RuntimeEvent(type="assistant", text=text) if text else None
+    if event.get("type") == "agent_message":
+        text = payload.get("message") or event.get("message")
+        return RuntimeEvent(type="assistant", text=str(text)) if text else None
+    if event.get("type") == "item.completed":
+        item = event.get("item") or {}
+        if item.get("type") == "agent_message" and item.get("text"):
+            return RuntimeEvent(type="assistant", text=str(item["text"]))
+    return None
+
+
 def _extract_text(content: list) -> str:
     parts: list[str] = []
     for item in content:
@@ -137,3 +185,26 @@ def _extract_text(content: list) -> str:
         elif isinstance(item, str):
             parts.append(item)
     return "".join(parts).strip()
+
+
+async def _stream_process_output(proc: asyncio.subprocess.Process, parser: Callable[[str], RuntimeEvent | None], on_event: RuntimeEventCallback) -> tuple[bytes, bytes]:
+    stdout_parts: list[bytes] = []
+    stderr_task = asyncio.create_task(proc.stderr.read() if proc.stderr else _empty_bytes())
+    if proc.stdout is not None:
+        async for raw_line in proc.stdout:
+            stdout_parts.append(raw_line)
+            event = parser(raw_line.decode(errors="replace"))
+            if event is not None:
+                try:
+                    result = on_event(event)
+                    if result is not None:
+                        await result
+                except Exception:
+                    pass
+    await proc.wait()
+    stderr = await stderr_task
+    return b"".join(stdout_parts), stderr
+
+
+async def _empty_bytes() -> bytes:
+    return b""

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import RuntimeRunResult
+from .progress import RuntimeEvent, RuntimeEventCallback
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,14 @@ class ClaudeRunner:
         self.model = model
         self.extra_args = tuple(extra_args)
 
-    async def start(self, repo_path: Path, prompt: str, on_started: Callable[[int], None] | None = None) -> RuntimeRunResult:
-        return await self._run(self._argv(prompt), cwd=repo_path, on_started=on_started)
+    async def start(
+        self,
+        repo_path: Path,
+        prompt: str,
+        on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
+    ) -> RuntimeRunResult:
+        return await self._run(self._argv(prompt), cwd=repo_path, on_started=on_started, on_event=on_event)
 
     async def resume(
         self,
@@ -41,8 +48,9 @@ class ClaudeRunner:
         repo_path: Path,
         prompt: str,
         on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
     ) -> RuntimeRunResult:
-        return await self._run([*self._argv(prompt), "--resume", session_id], cwd=repo_path, on_started=on_started)
+        return await self._run([*self._argv(prompt), "--resume", session_id], cwd=repo_path, on_started=on_started, on_event=on_event)
 
     def _argv(self, prompt: str) -> list[str]:
         argv = [self.claude_bin, "-p", prompt, "--output-format", "stream-json", "--verbose"]
@@ -58,6 +66,7 @@ class ClaudeRunner:
         argv: list[str],
         cwd: Path,
         on_started: Callable[[int], None] | None = None,
+        on_event: RuntimeEventCallback | None = None,
     ) -> RuntimeRunResult:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -70,7 +79,10 @@ class ClaudeRunner:
         if on_started:
             on_started(proc.pid)
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
+            if on_event is None:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
+            else:
+                stdout, stderr = await asyncio.wait_for(_stream_process_output(proc, parse_claude_event_line, on_event), timeout=self.timeout_seconds)
         except TimeoutError:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -109,6 +121,25 @@ def parse_claude_stream_json(raw: str) -> ParsedClaudeOutput:
     return ParsedClaudeOutput(session_id=session_id, last_message=messages[-1] if messages else "")
 
 
+def parse_claude_event_line(line: str) -> RuntimeEvent | None:
+    if not line.strip():
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    session_id = event.get("session_id") or event.get("sessionId")
+    if event.get("type") == "assistant":
+        text = _message_text(event.get("message") or event)
+        return RuntimeEvent(type="assistant", text=text, session_id=session_id) if text else None
+    if event.get("type") == "result":
+        text = event.get("result")
+        return RuntimeEvent(type="assistant", text=str(text), session_id=session_id) if text else None
+    if session_id:
+        return RuntimeEvent(type="session", text="", session_id=str(session_id))
+    return None
+
+
 def _message_text(message: object) -> str:
     if not isinstance(message, dict):
         return ""
@@ -118,3 +149,26 @@ def _message_text(message: object) -> str:
         if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
             parts.append(str(item["text"]))
     return "".join(parts).strip()
+
+
+async def _stream_process_output(proc: asyncio.subprocess.Process, parser: Callable[[str], RuntimeEvent | None], on_event: RuntimeEventCallback) -> tuple[bytes, bytes]:
+    stdout_parts: list[bytes] = []
+    stderr_task = asyncio.create_task(proc.stderr.read() if proc.stderr else _empty_bytes())
+    if proc.stdout is not None:
+        async for raw_line in proc.stdout:
+            stdout_parts.append(raw_line)
+            event = parser(raw_line.decode(errors="replace"))
+            if event is not None:
+                try:
+                    result = on_event(event)
+                    if result is not None:
+                        await result
+                except Exception:
+                    pass
+    await proc.wait()
+    stderr = await stderr_task
+    return b"".join(stdout_parts), stderr
+
+
+async def _empty_bytes() -> bytes:
+    return b""

@@ -14,6 +14,13 @@ lark_cli_bin: lark-cli
 bot_names:
   - your-bot-name
 
+features:
+  progress_replies: false
+  card_replies: false
+  runtime_streaming: false
+  multi_workspace: false
+  card_update_min_interval_seconds: 5
+
 runtimes:
   codex:
     type: codex
@@ -41,3 +48,30 @@ agent_templates:
     description: Summarize progress without modifying files.
     prompt: |
       请总结当前 repo/session 的目标、已完成工作、验证状态、风险和下一步。不要修改文件。任务：${task}
+
+# Multi-workspace example:
+#
+# default_workspace: personal
+# shared_repos:
+#   agent: /Users/you/Code/feishu-agent-remote
+# workspaces:
+#   personal:
+#     owner_open_id: ou_personal
+#     authorized_open_ids:
+#       - ou_personal
+#     default_repo: agent
+#     lark_cli_args:
+#       - --profile
+#       - personal
+#     features:
+#       multi_workspace: true
+#   team:
+#     owner_open_id: ou_team
+#     authorized_open_ids:
+#       - ou_team
+#     default_repo: agent
+#     lark_cli_args:
+#       - --profile
+#       - team
+#     features:
+#       multi_workspace: true

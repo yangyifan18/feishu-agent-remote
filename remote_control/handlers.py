@@ -10,6 +10,8 @@ from typing import Any
 from .commands import Command
 from .paths import CANONICAL_CONFIG, CANONICAL_DIR, CANONICAL_STATE, is_legacy_path
 from .models import RuntimeRunResult, IncomingMessage, RemoteAgent, RemoteConfig, RunRecord, SessionBinding
+from .progress import CardProgressReporter, NullProgressReporter, TextProgressReporter
+from .replies import MessageRef
 from .run_manager import RunAlreadyActive, RunManager
 from .runtimes import RuntimeRegistry
 from .session_finder import RuntimeSessionFinder
@@ -34,6 +36,28 @@ class CommandHandlers:
         self.run_manager = RunManager(state, self.runtime_registry)
         self.lark = lark_gateway
         self.session_finder = session_finder or RuntimeSessionFinder()
+
+    def _workspace_id(self, msg: IncomingMessage) -> str:
+        return msg.workspace_id or self.config.workspace_id or "default"
+
+    def _progress_reporter(self, msg: IncomingMessage):
+        features = self.config.features
+        if not features or not features.progress_replies:
+            return None
+        ref = MessageRef(
+            workspace_id=self._workspace_id(msg),
+            chat_id=msg.chat_id,
+            message_id=msg.message_id,
+            thread_key=_binding_key(msg),
+        )
+        if features.card_replies:
+            return CardProgressReporter(
+                self.lark,
+                ref,
+                min_interval_seconds=features.card_update_min_interval_seconds,
+                state=self.state,
+            )
+        return TextProgressReporter(self.lark, ref)
 
     async def _help(self, msg: IncomingMessage, command: Command) -> None:
         binding = self._current_binding(msg)
@@ -88,6 +112,8 @@ class CommandHandlers:
         binding_key = _binding_key(msg)
         run: RunRecord | None = None
         try:
+            reporter = self._progress_reporter(msg)
+            agent_title = title or _title_from_prompt(task)
             run, result = await self.run_manager.start_new(
                 chat_id=msg.chat_id,
                 thread_key=binding_key,
@@ -96,9 +122,13 @@ class CommandHandlers:
                 repo_path=repo_path,
                 prompt=prompt,
                 runtime=runtime,
+                workspace_id=self._workspace_id(msg),
+                progress_reporter=reporter,
+                runtime_streaming=bool(self.config.features and self.config.features.runtime_streaming),
+                title=agent_title,
                 on_reserved=lambda _run: self.lark.reply(
                     msg.message_id,
-                    f"收到，开始创建线上专员 `{title or _title_from_prompt(task)}`（runtime={runtime}{template_text}）。",
+                    f"收到，开始创建线上专员 `{agent_title}`（runtime={runtime}{template_text}）。",
                 ),
             )
         except RunAlreadyActive as exc:
@@ -107,7 +137,7 @@ class CommandHandlers:
         try:
             if result.session_id:
                 agent = self.state.create_remote_agent(
-                    title or _title_from_prompt(prompt),
+                    agent_title,
                     repo_alias,
                     repo_path,
                     result.session_id,
@@ -115,13 +145,15 @@ class CommandHandlers:
                     binding_key,
                     status="idle" if result.status == "succeeded" else "failed",
                     runtime=runtime,
+                    workspace_id=self._workspace_id(msg),
                 )
-                self.run_manager.attach_run_to_agent(run.id, agent.id, result.session_id, runtime)
+                self.run_manager.attach_run_to_agent(run.id, agent.id, result.session_id, runtime, self._workspace_id(msg))
                 switch_text = self._bind_agent(msg, agent.id, repo_alias, repo_path, result.session_id, runtime)
                 await self.lark.reply(msg.message_id, switch_text)
-            await self.lark.reply(msg.message_id, result.summary)
+            if not reporter:
+                await self.lark.reply(msg.message_id, result.summary)
         finally:
-            self.run_manager.release_binding(msg.chat_id, binding_key, run.id if run else None)
+            self.run_manager.release_binding(msg.chat_id, binding_key, run.id if run else None, self._workspace_id(msg))
 
     async def _continue_session(self, msg: IncomingMessage, prompt: str) -> None:
         binding = self._current_binding(msg)
@@ -132,6 +164,7 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, "当前绑定缺少 Agent ID，请重新 `/attach <agent_id>`。")
             return
 
+        reporter = self._progress_reporter(msg)
         try:
             run, result = await self.run_manager.resume_agent(
                 agent_id=binding.agent_id,
@@ -143,22 +176,26 @@ class CommandHandlers:
                 prompt=prompt,
                 runtime=binding.runtime,
                 thread_key=_binding_key(msg),
+                workspace_id=self._workspace_id(msg),
+                progress_reporter=reporter,
+                runtime_streaming=bool(self.config.features and self.config.features.runtime_streaming),
+                title=binding.title,
             )
         except RunAlreadyActive as exc:
             await self.lark.reply(msg.message_id, f"当前线上专员还在处理上一条任务：{exc.run.id}。可用 `/runs` 查看，或 `/cancel` 取消。")
             return
         self._update_binding_after_result(msg, binding, result)
-        if result.status != "cancelled":
+        if result.status != "cancelled" and reporter is None:
             await self.lark.reply(msg.message_id, result.summary)
 
     async def _status(self, msg: IncomingMessage, command: Command) -> None:
         binding = self._current_binding(msg)
-        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id)
+        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id, workspace_id=self._workspace_id(msg))
         if binding is None:
             session_text = "当前聊天未绑定线上专员。可用 `/agents` 查看，或 `/new <repo> <title>` 创建。"
         else:
             agent_id = binding.agent_id or "(未登记)"
-            run = self.state.get_running_run_for_agent(binding.agent_id) if binding.agent_id else None
+            run = self.state.get_running_run_for_agent(binding.agent_id, self._workspace_id(msg)) if binding.agent_id else None
             last_run = run or (self.state.get_run(binding.last_run_id) if binding.last_run_id else None)
             session_text = (
                 f"当前线上专员：{binding.title or '(无标题)'}\n"
@@ -175,7 +212,7 @@ class CommandHandlers:
         await self.lark.reply(msg.message_id, session_text + pending_text + "\n\n可用：/runs /cancel /detach /help")
 
     async def _bindings(self, msg: IncomingMessage, command: Command) -> None:
-        sessions = self.state.list_sessions()
+        sessions = self.state.list_sessions(workspace_id=self._workspace_id(msg))
         if not sessions:
             await self.lark.reply(msg.message_id, "暂无聊天绑定。")
             return
@@ -185,7 +222,7 @@ class CommandHandlers:
     async def _agents(self, msg: IncomingMessage, command: Command) -> None:
         limit = _parse_limit(command.args, default=10)
         current = self._current_binding(msg)
-        agents = self.state.list_remote_agents(limit=limit)
+        agents = self.state.list_remote_agents(limit=limit, workspace_id=self._workspace_id(msg))
         if not agents:
             await self.lark.reply(msg.message_id, "还没有线上专员。用 `/new <repo> <title> [任务]` 创建一个。")
             return
@@ -206,11 +243,11 @@ class CommandHandlers:
         if not agent_ids:
             await self.lark.reply(msg.message_id, "用法：/remove <agent_id> [agent_id ...]。")
             return
-        busy = [agent_id for agent_id in agent_ids if self.state.get_running_run_for_agent(agent_id)]
+        busy = [agent_id for agent_id in agent_ids if self.state.get_running_run_for_agent(agent_id, self._workspace_id(msg))]
         if busy:
             await self.lark.reply(msg.message_id, "这些线上专员仍有任务运行，请先 `/cancel`：" + ", ".join(busy))
             return
-        removed = self.state.delete_remote_agents(agent_ids)
+        removed = self.state.delete_remote_agents(agent_ids, workspace_id=self._workspace_id(msg))
         removed_ids = {agent.id for agent in removed}
         missing = [agent_id for agent_id in agent_ids if agent_id not in removed_ids]
         if not removed and missing:
@@ -241,7 +278,7 @@ class CommandHandlers:
     async def _attach(self, msg: IncomingMessage, command: Command) -> None:
         args = command.args.strip()
         if args and not args.startswith("repo="):
-            agent = self.state.get_remote_agent(args)
+            agent = self.state.get_remote_agent(args, self._workspace_id(msg))
             if agent is not None:
                 switch_text = self._bind_agent(msg, agent.id, agent.repo_alias, agent.repo_path, agent.runtime_session_id or agent.codex_session_id, agent.runtime)
                 await self.lark.reply(msg.message_id, switch_text)
@@ -259,7 +296,7 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, f"未知 repo：{repo_alias}。可用：{', '.join(self.config.repos)}")
             return
         title = f"imported {session_id[:8]}"
-        agent = self.state.create_remote_agent(title, repo_alias, repo_path, session_id, msg.chat_id, _binding_key(msg), runtime=runtime)
+        agent = self.state.create_remote_agent(title, repo_alias, repo_path, session_id, msg.chat_id, _binding_key(msg), runtime=runtime, workspace_id=self._workspace_id(msg))
         switch_text = self._bind_agent(msg, agent.id, repo_alias, repo_path, session_id, runtime)
         await self.lark.reply(msg.message_id, switch_text)
 
@@ -273,6 +310,7 @@ class CommandHandlers:
             "关键修改或产出、已运行验证、当前风险、下一步建议。不要修改文件。"
         )
         await self.lark.reply(msg.message_id, f"开始生成交接总结：{agent.title if agent else session_id}")
+        reporter = self._progress_reporter(msg)
         try:
             run, result = await self.run_manager.resume_session(
                 agent_id=agent.id if agent else None,
@@ -284,17 +322,21 @@ class CommandHandlers:
                 prompt=prompt,
                 runtime=runtime,
                 thread_key=_binding_key(msg),
+                workspace_id=self._workspace_id(msg),
+                progress_reporter=reporter,
+                runtime_streaming=bool(self.config.features and self.config.features.runtime_streaming),
+                title=agent.title if agent else session_id,
             )
         except RunAlreadyActive as exc:
             await self.lark.reply(msg.message_id, f"这个线上专员还在处理上一条任务：{exc.run.id}。请稍后再交接，或 `/cancel`。")
             return
         if agent:
             self._update_binding_after_result(msg, self._binding_from_agent(msg, agent), result)
-        if result.status != "cancelled":
+        if result.status != "cancelled" and reporter is None:
             await self.lark.reply(msg.message_id, result.summary)
 
     async def _detach(self, msg: IncomingMessage, command: Command) -> None:
-        self.state.close_session(msg.chat_id, _binding_key(msg))
+        self.state.close_session(msg.chat_id, _binding_key(msg), self._workspace_id(msg))
         suffix = "（旧命令 `/close` 仍可用，建议改用 `/detach`）" if command.raw_name == "close" else ""
         await self.lark.reply(msg.message_id, "已解除当前聊天绑定，不会删除线上专员。" + suffix)
 
@@ -309,11 +351,12 @@ class CommandHandlers:
             msg.chat_id,
             msg.message_id,
             {"user_id": target, "text": text},
+            workspace_id=self._workspace_id(msg),
         )
         await self.lark.reply(msg.message_id, f"将以你的 user 身份发送给 `{target}`：\n{text}\n\n确认发送：/approve {confirmation.id}\n取消：/reject {confirmation.id}")
 
     async def _pending(self, msg: IncomingMessage, command: Command) -> None:
-        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id)
+        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id, workspace_id=self._workspace_id(msg))
         if not pending:
             await self.lark.reply(msg.message_id, "当前没有待确认操作。")
             return
@@ -321,7 +364,7 @@ class CommandHandlers:
         await self.lark.reply(msg.message_id, "待确认操作：\n" + "\n".join(lines) + "\n\n确认：/approve <id>；取消：/reject <id>")
 
     async def _approve_single_pending(self, msg: IncomingMessage) -> None:
-        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id)
+        pending = self.state.list_confirmations(requester_id=msg.sender_id, chat_id=msg.chat_id, workspace_id=self._workspace_id(msg))
         if len(pending) == 1:
             await self._approve(msg, Command("approve", pending[0].id, "确认", "确认", False))
         elif len(pending) > 1:
@@ -330,7 +373,7 @@ class CommandHandlers:
             await self._continue_session(msg, "确认")
 
     async def _approve(self, msg: IncomingMessage, command: Command) -> None:
-        confirmation = self.state.get_confirmation(command.args.strip())
+        confirmation = self.state.get_confirmation(command.args.strip(), self._workspace_id(msg))
         if confirmation is None or confirmation.status != "pending":
             await self.lark.reply(msg.message_id, "确认单不存在或已处理。")
             return
@@ -339,17 +382,17 @@ class CommandHandlers:
             return
         if confirmation.action == "send_user_message":
             await self.lark.send_user_message(confirmation.payload["user_id"], confirmation.payload["text"])
-            self.state.mark_confirmation(confirmation.id, "approved")
+            self.state.mark_confirmation(confirmation.id, "approved", self._workspace_id(msg))
             await self.lark.reply(msg.message_id, f"已发送：{confirmation.id}")
             return
         await self.lark.reply(msg.message_id, f"未知确认动作：{confirmation.action}")
 
     async def _reject(self, msg: IncomingMessage, command: Command) -> None:
-        confirmation = self.state.get_confirmation(command.args.strip())
+        confirmation = self.state.get_confirmation(command.args.strip(), self._workspace_id(msg))
         if confirmation is None or confirmation.status != "pending":
             await self.lark.reply(msg.message_id, "确认单不存在或已处理。")
             return
-        self.state.mark_confirmation(confirmation.id, "rejected")
+        self.state.mark_confirmation(confirmation.id, "rejected", self._workspace_id(msg))
         await self.lark.reply(msg.message_id, f"已取消：{confirmation.id}")
 
     async def _repos(self, msg: IncomingMessage, command: Command) -> None:
@@ -366,7 +409,7 @@ class CommandHandlers:
         if binding is None or not binding.agent_id:
             await self.lark.reply(msg.message_id, "当前聊天还没有绑定线上专员；请先 `/new` 或 `/attach`。")
             return
-        self.state.update_remote_agent_repo(binding.agent_id, alias, repo_path)
+        self.state.update_remote_agent_repo(binding.agent_id, alias, repo_path, self._workspace_id(msg))
         self.state.upsert_session(
             msg.chat_id,
             _binding_key(msg),
@@ -375,6 +418,7 @@ class CommandHandlers:
             binding.runtime_session_id or binding.codex_session_id,
             agent_id=binding.agent_id,
             runtime=binding.runtime,
+            workspace_id=self._workspace_id(msg),
         )
         suffix = "（旧命令 `/repo <alias>` 仍可用，建议改用 `/switch-repo <alias>`）" if command.raw_name == "repo" else ""
         await self.lark.reply(msg.message_id, f"当前线上专员 repo 已切换为 `{alias}`。" + suffix)
@@ -385,7 +429,7 @@ class CommandHandlers:
             await self.lark.reply(msg.message_id, "用法：/rename <agent_id> <new-title>。")
             return
         title = title[:60]
-        agent = self.state.rename_remote_agent(agent_id, title)
+        agent = self.state.rename_remote_agent(agent_id, title, self._workspace_id(msg))
         if agent is None:
             await self.lark.reply(msg.message_id, f"没有找到线上专员：{agent_id}")
             return
@@ -395,7 +439,7 @@ class CommandHandlers:
 
     async def _runs(self, msg: IncomingMessage, command: Command) -> None:
         agent_id, limit = self._parse_runs_args(msg, command.args)
-        runs = self.state.list_runs(agent_id=agent_id, limit=limit)
+        runs = self.state.list_runs(agent_id=agent_id, limit=limit, workspace_id=self._workspace_id(msg))
         if not runs:
             await self.lark.reply(msg.message_id, "暂无任务记录。")
             return
@@ -410,7 +454,7 @@ class CommandHandlers:
         if not agent_id:
             await self.lark.reply(msg.message_id, "当前聊天未绑定线上专员。用法：/cancel <agent_id>。")
             return
-        run = await self.run_manager.cancel_agent(agent_id)
+        run = await self.run_manager.cancel_agent(agent_id, self._workspace_id(msg))
         if run is None:
             await self.lark.reply(msg.message_id, "当前没有运行中的任务。")
             return
@@ -445,7 +489,7 @@ class CommandHandlers:
         config_path = self.config.config_path
         checks = [
             _check_line("lark-cli executable", bool(lark_path), self.config.lark_cli_bin),
-            _check_line("lark-cli event list", await _command_ok([self.config.lark_cli_bin, "event", "list"]) if lark_path else False, "event list"),
+            _check_line("lark-cli event list", await _command_ok([self.config.lark_cli_bin, *self.config.lark_cli_args, "event", "list"]) if lark_path else False, "event list"),
             _check_line("config parsed", config_path is None or config_path.exists(), str(config_path or "in-memory")),
             _check_line("config canonical", not config_path or not is_legacy_path(config_path), str(CANONICAL_CONFIG)),
             _check_line("state canonical", not is_legacy_path(self.state.path), str(CANONICAL_STATE)),
@@ -464,13 +508,23 @@ class CommandHandlers:
             checks.append(_check_line(f"runtime {name}", bool(path), bin_name))
         for alias, repo in self.config.repos.items():
             checks.append(_check_line(f"repo {alias}", repo.path.exists(), str(repo.path)))
+        if self.config.workspace_id != "default" or (self.config.features and self.config.features.multi_workspace):
+            features = self.config.features
+            checks.insert(0, f"Workspace: {self.config.workspace_id} ({self.config.display_name or self.config.workspace_id})")
+            if features:
+                checks.append(
+                    "Features: "
+                    f"cards={str(features.card_replies).lower()} "
+                    f"streaming={str(features.runtime_streaming).lower()} "
+                    f"multi_workspace={str(features.multi_workspace).lower()}"
+                )
         await self.lark.reply(msg.message_id, "Doctor：\n" + "\n".join(checks))
 
     def _current_binding(self, msg: IncomingMessage) -> SessionBinding | None:
-        return self.state.get_session(msg.chat_id, _binding_key(msg))
+        return self.state.get_session(msg.chat_id, _binding_key(msg), self._workspace_id(msg))
 
     def _agent_status(self, agent: RemoteAgent) -> str:
-        run = self.state.get_running_run_for_agent(agent.id)
+        run = self.state.get_running_run_for_agent(agent.id, agent.workspace_id)
         return run.status if run else agent.status
 
     def _binding_from_agent(self, msg: IncomingMessage, agent: RemoteAgent) -> SessionBinding:
@@ -487,20 +541,22 @@ class CommandHandlers:
             last_error=agent.last_error,
             runtime=agent.runtime,
             runtime_session_id=agent.runtime_session_id or agent.codex_session_id,
+            workspace_id=agent.workspace_id,
         )
 
     def _update_binding_after_result(self, msg: IncomingMessage, binding: SessionBinding, result: RuntimeRunResult) -> None:
         session_id = result.session_id or binding.runtime_session_id or binding.codex_session_id
-        self.state.upsert_session(msg.chat_id, _binding_key(msg), binding.repo_alias, binding.repo_path, session_id, agent_id=binding.agent_id, runtime=binding.runtime)
+        self.state.upsert_session(msg.chat_id, _binding_key(msg), binding.repo_alias, binding.repo_path, session_id, agent_id=binding.agent_id, runtime=binding.runtime, workspace_id=self._workspace_id(msg))
         if binding.agent_id and result.session_id:
-            self.state.update_remote_agent_session(binding.agent_id, result.session_id, binding.runtime)
+            self.state.update_remote_agent_session(binding.agent_id, result.session_id, binding.runtime, self._workspace_id(msg))
 
     def _bind_agent(self, msg: IncomingMessage, agent_id: str, repo_alias: str, repo_path: Path, runtime_session_id: str, runtime: str = "codex") -> str:
         key = _binding_key(msg)
-        previous = self.state.get_session(msg.chat_id, key)
-        self.state.upsert_session(msg.chat_id, key, repo_alias, repo_path, runtime_session_id, agent_id=agent_id, runtime=runtime)
-        self.state.touch_remote_agent(agent_id)
-        current = self.state.get_remote_agent(agent_id)
+        workspace_id = self._workspace_id(msg)
+        previous = self.state.get_session(msg.chat_id, key, workspace_id)
+        self.state.upsert_session(msg.chat_id, key, repo_alias, repo_path, runtime_session_id, agent_id=agent_id, runtime=runtime, workspace_id=workspace_id)
+        self.state.touch_remote_agent(agent_id, workspace_id=workspace_id)
+        current = self.state.get_remote_agent(agent_id, workspace_id)
         current_title = current.title if current else runtime_session_id
         if previous and previous.agent_id and previous.agent_id != agent_id:
             previous_title = previous.title or previous.runtime_session_id or previous.codex_session_id
@@ -537,12 +593,12 @@ class CommandHandlers:
             repo_path = self._repo_path(repo_alias)
             return None, repo_alias, repo_path, session_id, runtime
         if stripped:
-            agent = self.state.get_remote_agent(stripped)
+            agent = self.state.get_remote_agent(stripped, self._workspace_id(msg))
             if agent:
                 return agent, agent.repo_alias, agent.repo_path, agent.runtime_session_id or agent.codex_session_id, agent.runtime
         binding = self._current_binding(msg)
         if binding:
-            agent = self.state.get_remote_agent(binding.agent_id) if binding.agent_id else None
+            agent = self.state.get_remote_agent(binding.agent_id, self._workspace_id(msg)) if binding.agent_id else None
             return agent, binding.repo_alias, binding.repo_path, binding.runtime_session_id or binding.codex_session_id, binding.runtime
         return None, None, None, None, "codex"
 
