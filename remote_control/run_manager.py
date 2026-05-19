@@ -1,13 +1,12 @@
 import asyncio
 import os
 import signal
-import time
 from pathlib import Path
 from typing import Any
 
 from .models import RuntimeRunResult, RunRecord
 from .runtimes import RuntimeRegistry
-from .state import StateStore
+from .state import BindingAlreadyReserved, StateStore
 
 
 class RunManager:
@@ -15,6 +14,7 @@ class RunManager:
         self.state = state
         self.runtime_registry = runtime_registry if isinstance(runtime_registry, RuntimeRegistry) else RuntimeRegistry({"codex": runtime_registry})
         self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._binding_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def codex_runner(self) -> Any:
@@ -31,22 +31,51 @@ class RunManager:
         self,
         *,
         chat_id: str,
+        thread_key: str,
         message_id: str,
         repo_alias: str,
         repo_path: Path,
         prompt: str,
         runtime: str = "codex",
+        on_reserved: Any | None = None,
     ) -> tuple[RunRecord, RuntimeRunResult]:
-        run = self.state.create_run(
-            agent_id=None,
-            chat_id=chat_id,
-            message_id=message_id,
-            repo_alias=repo_alias,
-            repo_path=repo_path,
-            codex_session_id=None,
-            prompt=prompt,
-            runtime=runtime,
-        )
+        async with self._lock_for_binding(chat_id, thread_key):
+            existing = self.state.get_running_run_for_binding(chat_id, thread_key)
+            if existing is not None:
+                raise RunAlreadyActive(existing)
+            try:
+                run = self.state.create_reserved_run_for_binding(
+                    chat_id=chat_id,
+                    thread_key=thread_key,
+                    message_id=message_id,
+                    repo_alias=repo_alias,
+                    repo_path=repo_path,
+                    prompt=prompt,
+                    runtime=runtime,
+                )
+            except BindingAlreadyReserved as exc:
+                existing = self.state.get_run(exc.run_id) if exc.run_id else None
+                if existing is None:
+                    self.state.release_binding_reservation(chat_id, thread_key, exc.run_id)
+                    run = self.state.create_reserved_run_for_binding(
+                        chat_id=chat_id,
+                        thread_key=thread_key,
+                        message_id=message_id,
+                        repo_alias=repo_alias,
+                        repo_path=repo_path,
+                        prompt=prompt,
+                        runtime=runtime,
+                    )
+                else:
+                    raise RunAlreadyActive(existing) from exc
+        if on_reserved is not None:
+            try:
+                maybe_awaitable = on_reserved(run)
+                if maybe_awaitable is not None:
+                    await maybe_awaitable
+            except Exception:
+                self.release_binding(chat_id, thread_key, run.id)
+                raise
         try:
             runner = self.runtime_registry.get(runtime)
             result = _normalize_result(await runner.start(
@@ -58,6 +87,9 @@ class RunManager:
             result = RuntimeRunResult(session_id=None, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
         self._finish(run.id, result, runtime)
         return self.state.get_run(run.id) or run, result
+
+    def release_binding(self, chat_id: str, thread_key: str, run_id: str | None = None) -> None:
+        self.state.release_binding_reservation(chat_id, thread_key, run_id)
 
     async def resume_agent(
         self,
@@ -120,6 +152,7 @@ class RunManager:
         prompt: str,
         agent_id: str | None = None,
         runtime: str = "codex",
+        thread_key: str | None = None,
     ) -> tuple[RunRecord, RuntimeRunResult]:
         if agent_id:
             return await self.resume_agent(
@@ -132,16 +165,33 @@ class RunManager:
                 prompt=prompt,
                 runtime=runtime,
             )
-        run = self.state.create_run(
-            agent_id=None,
-            chat_id=chat_id,
-            message_id=message_id,
-            repo_alias=repo_alias,
-            repo_path=repo_path,
-            codex_session_id=runtime_session_id,
-            prompt=prompt,
-            runtime=runtime,
-        )
+        if thread_key:
+            async with self._lock_for_binding(chat_id, thread_key):
+                existing = self.state.get_running_run_for_binding(chat_id, thread_key)
+                if existing is not None:
+                    raise RunAlreadyActive(existing)
+                run = self.state.create_run(
+                    agent_id=None,
+                    chat_id=chat_id,
+                    thread_key=thread_key,
+                    message_id=message_id,
+                    repo_alias=repo_alias,
+                    repo_path=repo_path,
+                    codex_session_id=runtime_session_id,
+                    prompt=prompt,
+                    runtime=runtime,
+                )
+        else:
+            run = self.state.create_run(
+                agent_id=None,
+                chat_id=chat_id,
+                message_id=message_id,
+                repo_alias=repo_alias,
+                repo_path=repo_path,
+                codex_session_id=runtime_session_id,
+                prompt=prompt,
+                runtime=runtime,
+            )
         try:
             runner = self.runtime_registry.get(runtime)
             result = _normalize_result(await runner.resume(
@@ -176,12 +226,12 @@ class RunManager:
                 clear_last_error=run.error is None,
             )
 
-    def cancel_agent(self, agent_id: str) -> RunRecord | None:
+    async def cancel_agent(self, agent_id: str) -> RunRecord | None:
         run = self.running_for_agent(agent_id)
         if run is None:
             return None
         if run.pid:
-            terminate_process_group(run.pid)
+            await terminate_process_group(run.pid)
         self.state.finish_run(run.id, "cancelled", summary="用户已取消任务。")
         self.state.touch_remote_agent(agent_id, status="idle", last_run_id=run.id, last_error="用户已取消任务。")
         return self.state.get_run(run.id) or run
@@ -207,6 +257,14 @@ class RunManager:
             self._agent_locks[agent_id] = lock
         return lock
 
+    def _lock_for_binding(self, chat_id: str, thread_key: str) -> asyncio.Lock:
+        key = f"{chat_id}:{thread_key}"
+        lock = self._binding_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._binding_locks[key] = lock
+        return lock
+
 
 class RunAlreadyActive(Exception):
     def __init__(self, run: RunRecord):
@@ -214,10 +272,10 @@ class RunAlreadyActive(Exception):
         self.run = run
 
 
-def terminate_process_group(pid: int) -> None:
+async def terminate_process_group(pid: int, grace_seconds: float = 0.2) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
-        time.sleep(0.2)
+        await asyncio.sleep(grace_seconds)
         os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         return

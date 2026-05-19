@@ -85,30 +85,43 @@ class CommandHandlers:
             return
 
         template_text = f"，template={template_name}" if template_name else ""
-        await self.lark.reply(msg.message_id, f"收到，开始创建线上专员 `{title or _title_from_prompt(task)}`（runtime={runtime}{template_text}）。")
-        run, result = await self.run_manager.start_new(
-            chat_id=msg.chat_id,
-            message_id=msg.message_id,
-            repo_alias=repo_alias,
-            repo_path=repo_path,
-            prompt=prompt,
-            runtime=runtime,
-        )
-        if result.session_id:
-            agent = self.state.create_remote_agent(
-                title or _title_from_prompt(prompt),
-                repo_alias,
-                repo_path,
-                result.session_id,
-                msg.chat_id,
-                _binding_key(msg),
-                status="idle" if result.status == "succeeded" else "failed",
+        binding_key = _binding_key(msg)
+        run: RunRecord | None = None
+        try:
+            run, result = await self.run_manager.start_new(
+                chat_id=msg.chat_id,
+                thread_key=binding_key,
+                message_id=msg.message_id,
+                repo_alias=repo_alias,
+                repo_path=repo_path,
+                prompt=prompt,
                 runtime=runtime,
+                on_reserved=lambda _run: self.lark.reply(
+                    msg.message_id,
+                    f"收到，开始创建线上专员 `{title or _title_from_prompt(task)}`（runtime={runtime}{template_text}）。",
+                ),
             )
-            self.run_manager.attach_run_to_agent(run.id, agent.id, result.session_id, runtime)
-            switch_text = self._bind_agent(msg, agent.id, repo_alias, repo_path, result.session_id, runtime)
-            await self.lark.reply(msg.message_id, switch_text)
-        await self.lark.reply(msg.message_id, result.summary)
+        except RunAlreadyActive as exc:
+            await self.lark.reply(msg.message_id, f"当前聊天正在创建线上专员或处理任务：{exc.run.id}。可稍后再试，或 /runs 查看。")
+            return
+        try:
+            if result.session_id:
+                agent = self.state.create_remote_agent(
+                    title or _title_from_prompt(prompt),
+                    repo_alias,
+                    repo_path,
+                    result.session_id,
+                    msg.chat_id,
+                    binding_key,
+                    status="idle" if result.status == "succeeded" else "failed",
+                    runtime=runtime,
+                )
+                self.run_manager.attach_run_to_agent(run.id, agent.id, result.session_id, runtime)
+                switch_text = self._bind_agent(msg, agent.id, repo_alias, repo_path, result.session_id, runtime)
+                await self.lark.reply(msg.message_id, switch_text)
+            await self.lark.reply(msg.message_id, result.summary)
+        finally:
+            self.run_manager.release_binding(msg.chat_id, binding_key, run.id if run else None)
 
     async def _continue_session(self, msg: IncomingMessage, prompt: str) -> None:
         binding = self._current_binding(msg)
@@ -269,6 +282,7 @@ class CommandHandlers:
                 runtime_session_id=session_id,
                 prompt=prompt,
                 runtime=runtime,
+                thread_key=_binding_key(msg),
             )
         except RunAlreadyActive as exc:
             await self.lark.reply(msg.message_id, f"这个线上专员还在处理上一条任务：{exc.run.id}。请稍后再交接，或 `/cancel`。")
@@ -395,7 +409,7 @@ class CommandHandlers:
         if not agent_id:
             await self.lark.reply(msg.message_id, "当前聊天未绑定线上专员。用法：/cancel <agent_id>。")
             return
-        run = self.run_manager.cancel_agent(agent_id)
+        run = await self.run_manager.cancel_agent(agent_id)
         if run is None:
             await self.lark.reply(msg.message_id, "当前没有运行中的任务。")
             return

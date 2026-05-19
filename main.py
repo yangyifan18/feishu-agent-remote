@@ -1,10 +1,10 @@
 import asyncio
-import json
 import logging
 from typing import Any
 
 from config import FAR_CONFIG, FAR_STATE
 from remote_control.config import load_config
+from remote_control.events import ProcessedEventCache, consume_events_forever as consume_lark_events_forever
 from remote_control.lark_gateway import LarkGateway
 from remote_control.models import IncomingMessage
 from remote_control.router import RemoteRouter
@@ -24,72 +24,11 @@ router = RemoteRouter(
     lark_gateway,
 )
 
-_processed: set[str] = set()
+processed_events = ProcessedEventCache()
 
 
 async def consume_events_forever() -> None:
-    while True:
-        proc = await asyncio.create_subprocess_exec(
-            remote_config.lark_cli_bin,
-            "event",
-            "consume",
-            "im.message.receive_v1",
-            "--as",
-            "bot",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        logger.info("Started lark-cli event consumer pid=%s", proc.pid)
-        stderr_task = asyncio.create_task(_log_stderr(proc))
-        try:
-            await _read_events(proc)
-        finally:
-            stderr_task.cancel()
-            if proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-        logger.warning("lark-cli event consumer exited; restarting in 5 seconds")
-        await asyncio.sleep(5)
-
-
-async def _read_events(proc: asyncio.subprocess.Process) -> None:
-    if proc.stdout is None:
-        raise RuntimeError("lark-cli stdout is not available")
-    async for raw_line in proc.stdout:
-        line = raw_line.decode(errors="replace").strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            logger.warning("Ignoring non-JSON lark event line: %s", line[:300])
-            continue
-        task = asyncio.create_task(handle_event(event))
-        task.add_done_callback(_log_task_exception)
-    await proc.wait()
-
-
-async def _log_stderr(proc: asyncio.subprocess.Process) -> None:
-    if proc.stderr is None:
-        return
-    async for raw_line in proc.stderr:
-        line = raw_line.decode(errors="replace").strip()
-        if line:
-            logger.info("[lark-cli event] %s", line)
-
-
-def _log_task_exception(task: asyncio.Task) -> None:
-    try:
-        task.result()
-    except asyncio.CancelledError:
-        return
-    except Exception:
-        logger.exception("event handler task crashed")
+    await consume_lark_events_forever(remote_config.lark_cli_bin, handle_event, logger)
 
 
 async def handle_event(event: dict[str, Any]) -> None:
@@ -98,11 +37,8 @@ async def handle_event(event: dict[str, Any]) -> None:
         return
 
     dedup_key = event.get("event_id") or incoming.message_id
-    if dedup_key in _processed:
+    if processed_events.seen_or_add(str(dedup_key)):
         return
-    _processed.add(dedup_key)
-    if len(_processed) > 10000:
-        _processed.clear()
 
     text = incoming.content.strip()
     if not text:
@@ -146,7 +82,23 @@ def _incoming_from_event(event: dict[str, Any]) -> IncomingMessage | None:
         chat_type=str(event.get("chat_type") or ""),
         sender_id=sender_id,
         content=str(event.get("content") or ""),
+        thread_id=_event_text(event, "thread_id", "threadID", "thread"),
+        root_message_id=_event_text(event, "root_message_id", "root_id", "parent_id", "parent_message_id"),
     )
+
+
+def _event_text(event: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = event.get(key)
+        if value:
+            return str(value)
+    message = event.get("message")
+    if isinstance(message, dict):
+        for key in keys:
+            value = message.get(key)
+            if value:
+                return str(value)
+    return None
 
 
 if __name__ == "__main__":
