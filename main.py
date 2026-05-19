@@ -48,9 +48,10 @@ async def consume_all_workspaces(manager: WorkspaceManager | None = None) -> Non
 
 
 async def handle_event(event: dict[str, Any], workspace_id: str | None = None, *, manager: WorkspaceManager | None = None) -> None:
+    using_global_manager = manager is None
     manager = manager or workspace_manager
     runtime = manager.runtime_for(workspace_id)
-    is_default_single = workspace_id is None and runtime.workspace_id == remote_config.workspace_id
+    is_default_single = using_global_manager and workspace_id is None and runtime.workspace_id == remote_config.workspace_id
     active_config = remote_config if is_default_single else runtime.config
     active_gateway = lark_gateway if is_default_single else runtime.gateway
     active_router = router if is_default_single else runtime.router
