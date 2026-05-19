@@ -318,6 +318,7 @@ class RemoteControlTests(unittest.TestCase):
             self.assertEqual(plist["ProgramArguments"], ["/usr/bin/python3", str(Path(tmp) / "main.py")])
             self.assertEqual(plist["WorkingDirectory"], tmp)
             self.assertIn("FAR_CONFIG", plist["EnvironmentVariables"])
+            self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"])
             self.assertIn("StandardOutPath", plist)
 
     def test_codex_runner_puts_profile_before_exec_command(self):

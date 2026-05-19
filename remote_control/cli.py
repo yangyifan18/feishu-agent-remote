@@ -91,6 +91,7 @@ def build_plist(repo_root: Path | None = None, python: str | None = None) -> dic
         "EnvironmentVariables": {
             "FAR_CONFIG": str(resolve_config_path()),
             "FAR_STATE": str(resolve_state_path()),
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "PYTHONUNBUFFERED": "1",
         },
         "StandardOutPath": str(OUT_LOG),
