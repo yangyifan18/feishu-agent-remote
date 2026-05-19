@@ -143,6 +143,45 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual([item.id for item in state.list_confirmations(workspace_id="personal")], [confirm_a.id])
             self.assertIsNone(state.get_confirmation(confirm_a.id, workspace_id="team"))
 
+    def test_state_migrates_legacy_sessions_to_sessions_v2_with_default_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.sqlite"
+            import sqlite3
+
+            conn = sqlite3.connect(state_path)
+            conn.execute(
+                """
+                CREATE TABLE sessions (
+                    chat_id TEXT NOT NULL,
+                    thread_key TEXT NOT NULL,
+                    agent_id TEXT,
+                    repo_alias TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    codex_session_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, thread_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sessions (
+                    chat_id, thread_key, agent_id, repo_alias, repo_path, codex_session_id, status
+                )
+                VALUES ('oc', 'chat:oc', NULL, 'agent', '/tmp/agent', 'sess-old', 'idle')
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            state = StateStore(state_path)
+            binding = state.get_session("oc", "chat:oc", "default")
+
+            self.assertIsNotNone(binding)
+            self.assertEqual(binding.workspace_id, "default")
+            self.assertEqual(binding.codex_session_id, "sess-old")
+
     def test_workspace_manager_routes_same_chat_to_isolated_routers(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:

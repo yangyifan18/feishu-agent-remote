@@ -14,6 +14,7 @@ _COLUMN_MIGRATIONS: dict[tuple[str, str], str] = {
     ("sessions", "agent_id"): "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
     ("sessions", "runtime"): "ALTER TABLE sessions ADD COLUMN runtime TEXT DEFAULT 'codex'",
     ("sessions", "runtime_session_id"): "ALTER TABLE sessions ADD COLUMN runtime_session_id TEXT",
+    ("sessions", "workspace_id"): "ALTER TABLE sessions ADD COLUMN workspace_id TEXT DEFAULT 'default'",
     ("remote_agents", "last_run_id"): "ALTER TABLE remote_agents ADD COLUMN last_run_id TEXT",
     ("remote_agents", "last_error"): "ALTER TABLE remote_agents ADD COLUMN last_error TEXT",
     ("remote_agents", "runtime"): "ALTER TABLE remote_agents ADD COLUMN runtime TEXT DEFAULT 'codex'",
@@ -63,6 +64,7 @@ class StateStore:
             self._ensure_column(conn, "sessions", "agent_id")
             self._ensure_column(conn, "sessions", "runtime")
             self._ensure_column(conn, "sessions", "runtime_session_id")
+            self._ensure_column(conn, "sessions", "workspace_id")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS confirmations (
@@ -172,7 +174,7 @@ class StateStore:
                     workspace_id, chat_id, thread_key, agent_id, repo_alias, repo_path,
                     codex_session_id, runtime, runtime_session_id, status, updated_at
                 )
-                SELECT 'default', chat_id, thread_key, agent_id, repo_alias, repo_path,
+                SELECT workspace_id, chat_id, thread_key, agent_id, repo_alias, repo_path,
                        codex_session_id, runtime, runtime_session_id, status, updated_at
                 FROM sessions
                 """
