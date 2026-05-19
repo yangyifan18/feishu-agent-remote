@@ -74,6 +74,7 @@ class RunManager:
                 if maybe_awaitable is not None:
                     await maybe_awaitable
             except Exception:
+                self.state.finish_run(run.id, "failed", summary="创建线上专员前置回复失败。", error="on_reserved callback failed")
                 self.release_binding(chat_id, thread_key, run.id)
                 raise
         try:
@@ -104,44 +105,74 @@ class RunManager:
         runtime: str = "codex",
         thread_key: str | None = None,
     ) -> tuple[RunRecord, RuntimeRunResult]:
-        async with self._lock_for_agent(agent_id):
-            existing = self.running_for_agent(agent_id)
-            if existing is not None:
-                raise RunAlreadyActive(existing)
-            run = self.state.create_run(
-                agent_id=agent_id,
-                chat_id=chat_id,
-                thread_key=thread_key,
-                message_id=message_id,
-                repo_alias=repo_alias,
-                repo_path=repo_path,
-                codex_session_id=runtime_session_id,
-                prompt=prompt,
-                runtime=runtime,
-            )
-            self.state.touch_remote_agent(agent_id, status="running", last_run_id=run.id, last_error=None)
+        run: RunRecord | None = None
+        if thread_key:
+            async with self._lock_for_binding(chat_id, thread_key):
+                existing = self.state.get_running_run_for_binding(chat_id, thread_key)
+                if existing is not None:
+                    raise RunAlreadyActive(existing)
+                async with self._lock_for_agent(agent_id):
+                    existing = self.running_for_agent(agent_id)
+                    if existing is not None:
+                        raise RunAlreadyActive(existing)
+                    try:
+                        run = self.state.create_reserved_run_for_binding(
+                            agent_id=agent_id,
+                            chat_id=chat_id,
+                            thread_key=thread_key,
+                            message_id=message_id,
+                            repo_alias=repo_alias,
+                            repo_path=repo_path,
+                            codex_session_id=runtime_session_id,
+                            prompt=prompt,
+                            runtime=runtime,
+                        )
+                    except BindingAlreadyReserved as exc:
+                        existing = self.state.get_run(exc.run_id) if exc.run_id else None
+                        raise RunAlreadyActive(existing) from exc
+                    self.state.touch_remote_agent(agent_id, status="running", last_run_id=run.id, last_error=None)
+        else:
+            async with self._lock_for_agent(agent_id):
+                existing = self.running_for_agent(agent_id)
+                if existing is not None:
+                    raise RunAlreadyActive(existing)
+                run = self.state.create_run(
+                    agent_id=agent_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    repo_alias=repo_alias,
+                    repo_path=repo_path,
+                    codex_session_id=runtime_session_id,
+                    prompt=prompt,
+                    runtime=runtime,
+                )
+                self.state.touch_remote_agent(agent_id, status="running", last_run_id=run.id, last_error=None)
         try:
-            runner = self.runtime_registry.get(runtime)
-            result = _normalize_result(await runner.resume(
-                runtime_session_id,
-                repo_path,
-                prompt,
-                on_started=lambda pid: self.state.mark_run_running(run.id, pid),
-            ))
-        except Exception as exc:
-            result = RuntimeRunResult(session_id=runtime_session_id, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
-        cancelled = self._cancelled_result(run.id, runtime_session_id)
-        if cancelled is not None:
-            return cancelled
-        self._finish(run.id, result, runtime)
-        self.state.touch_remote_agent(
-            agent_id,
-            status="idle" if result.status == "succeeded" else "failed",
-            last_run_id=run.id,
-            last_error=None if result.status == "succeeded" else result.summary,
-            clear_last_error=result.status == "succeeded",
-        )
-        return self.state.get_run(run.id) or run, result
+            try:
+                runner = self.runtime_registry.get(runtime)
+                result = _normalize_result(await runner.resume(
+                    runtime_session_id,
+                    repo_path,
+                    prompt,
+                    on_started=lambda pid: self.state.mark_run_running(run.id, pid),
+                ))
+            except Exception as exc:
+                result = RuntimeRunResult(session_id=runtime_session_id, summary=f"{_runtime_label(runtime)} 执行异常：{exc}", status="failed")
+            cancelled = self._cancelled_result(run.id, runtime_session_id)
+            if cancelled is not None:
+                return cancelled
+            self._finish(run.id, result, runtime)
+            self.state.touch_remote_agent(
+                agent_id,
+                status="idle" if result.status == "succeeded" else "failed",
+                last_run_id=run.id,
+                last_error=None if result.status == "succeeded" else result.summary,
+                clear_last_error=result.status == "succeeded",
+            )
+            return self.state.get_run(run.id) or run, result
+        finally:
+            if thread_key and run is not None:
+                self.release_binding(chat_id, thread_key, run.id)
 
     async def resume_session(
         self,

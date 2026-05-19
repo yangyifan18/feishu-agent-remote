@@ -104,6 +104,31 @@ class SlowCodexRunner(FakeCodexRunner):
         return {"session_id": session_id, "summary": f"done {prompt}", "status": "succeeded"}
 
 
+class BlockingStartResumeRunner(SlowCodexRunner):
+    def __init__(self):
+        super().__init__()
+        self.start_entered = asyncio.Event()
+        self.resume_entered = asyncio.Event()
+        self.release_start = asyncio.Event()
+        self.release_resume = asyncio.Event()
+
+    async def start(self, repo_path, prompt, on_started=None):
+        self.calls.append(("start", str(repo_path), prompt))
+        if on_started:
+            on_started(12345)
+        self.start_entered.set()
+        await self.release_start.wait()
+        return {"session_id": "codex-replacement", "summary": "replacement started", "status": "succeeded"}
+
+    async def resume(self, session_id, repo_path, prompt, on_started=None):
+        self.calls.append(("resume", session_id, str(repo_path), prompt))
+        if on_started:
+            on_started(12345)
+        self.resume_entered.set()
+        await self.release_resume.wait()
+        return {"session_id": session_id, "summary": "followup done", "status": "succeeded"}
+
+
 class CancellableCodexRunner(FakeCodexRunner):
     def __init__(self):
         super().__init__()
@@ -143,6 +168,18 @@ class FakeLarkGateway:
 
     async def send_user_message(self, user_id, text):
         self.sent.append((user_id, text))
+
+
+class FailingFirstReplyGateway(FakeLarkGateway):
+    def __init__(self):
+        super().__init__()
+        self.fail_next = True
+
+    async def reply(self, message_id, text):
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("reply failed")
+        await super().reply(message_id, text)
 
 
 class FakeSessionFinder:
@@ -1280,6 +1317,41 @@ class RemoteControlTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_followup_is_rejected_while_new_replacement_runs_in_same_binding(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp)
+                await router.handle(message("/new repo=agent helper"))
+                blocking_runner = BlockingStartResumeRunner()
+                router.handlers.run_manager.codex_runner = blocking_runner
+
+                new_task = asyncio.create_task(router.handle(message("/new agent replacement replace it", message_id="om_new")))
+                await blocking_runner.start_entered.wait()
+                await router.handle(message("followup while replacing", message_id="om_followup"))
+                blocking_runner.release_start.set()
+                await new_task
+
+                self.assertEqual([call[0] for call in blocking_runner.calls], ["start"])
+                self.assertFalse(blocking_runner.resume_entered.is_set())
+                self.assertTrue(any("还在处理" in reply or "正在创建线上专员" in reply for _, reply in lark.replies))
+
+        asyncio.run(run())
+
+    def test_failed_new_ack_does_not_leave_permanent_queued_run(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                router, runner, lark = make_router(tmp, lark=FailingFirstReplyGateway())
+
+                with self.assertRaises(RuntimeError):
+                    await router.handle(message("/new agent bad-ack first", message_id="om_first"))
+                self.assertEqual(runner.calls, [])
+                self.assertEqual(router.state.list_runs(limit=1)[0].status, "failed")
+
+                await router.handle(message("/new agent retry second", message_id="om_retry"))
+                self.assertEqual(len(runner.calls), 1)
+
+        asyncio.run(run())
+
     def test_concurrent_fast_new_only_starts_one_run_for_same_binding(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:
@@ -1432,7 +1504,7 @@ class RemoteControlTests(unittest.TestCase):
         asyncio.run(run())
 
 
-def make_router(tmp):
+def make_router(tmp, lark=None):
     config_path = Path(tmp) / "config.yaml"
     config_path.write_text(
         "\n".join(
@@ -1449,7 +1521,7 @@ def make_router(tmp):
     config = load_config(config_path)
     state = StateStore(Path(tmp) / "state.sqlite")
     runner = FakeCodexRunner()
-    lark = FakeLarkGateway()
+    lark = lark or FakeLarkGateway()
     return RemoteRouter(config, state, runner, lark, FakeSessionFinder()), runner, lark
 
 
