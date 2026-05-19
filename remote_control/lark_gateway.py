@@ -60,14 +60,14 @@ class LarkGateway:
         return ReplyHandle(mode="card", workspace_id=ref.workspace_id, message_id=message_id or ref.message_id, card_id=card_id)
 
     async def update_progress_card(self, handle: ReplyHandle, progress: object) -> None:
-        if not handle.card_id:
-            raise RuntimeError("progress card handle has no card_id")
+        if not handle.message_id:
+            raise RuntimeError("progress card handle has no message_id")
         await self._run_json(
             [
                 *self._prefix,
                 "api",
                 "PATCH",
-                f"/open-apis/im/v1/messages/{handle.card_id}",
+                f"/open-apis/im/v1/messages/{handle.message_id}",
                 "--as",
                 "bot",
                 "--data",

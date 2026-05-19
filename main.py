@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from config import FAR_CONFIG, FAR_STATE
-from remote_control.events import ProcessedEventCache, consume_events_forever as consume_lark_events_forever
+from remote_control.events import EventConsumerBackoff, ProcessedEventCache, consume_events_forever as consume_lark_events_forever
 from remote_control.models import IncomingMessage
 from remote_control.workspaces import WorkspaceManager, WorkspaceRuntime, build_workspace_manager
 
@@ -44,7 +44,36 @@ async def consume_all_workspaces(manager: WorkspaceManager | None = None) -> Non
     if len(workspaces) <= 1 or not multi_enabled:
         await consume_workspace_events_forever(default, manager)
         return
-    await asyncio.gather(*(consume_workspace_events_forever(workspace, manager) for workspace in workspaces))
+    await asyncio.gather(*(_consume_workspace_guarded(workspace, manager) for workspace in workspaces))
+
+
+async def _consume_workspace_guarded(
+    workspace: WorkspaceRuntime,
+    manager: WorkspaceManager,
+    *,
+    sleeper=asyncio.sleep,
+    max_restarts: int | None = None,
+) -> None:
+    backoff = EventConsumerBackoff()
+    restarts = 0
+    while True:
+        started_at = asyncio.get_running_loop().time()
+        try:
+            await consume_workspace_events_forever(workspace, manager)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            runtime_seconds = max(0.0, asyncio.get_running_loop().time() - started_at)
+            delay = backoff.delay_after(runtime_seconds)
+            logger.exception("[workspace=%s] event consumer crashed; restarting in %.1fs", workspace.workspace_id, delay)
+        else:
+            runtime_seconds = max(0.0, asyncio.get_running_loop().time() - started_at)
+            delay = backoff.delay_after(runtime_seconds)
+            logger.warning("[workspace=%s] event consumer returned; restarting in %.1fs", workspace.workspace_id, delay)
+        restarts += 1
+        if max_restarts is not None and restarts >= max_restarts:
+            return
+        await sleeper(delay)
 
 
 async def handle_event(event: dict[str, Any], workspace_id: str | None = None, *, manager: WorkspaceManager | None = None) -> None:

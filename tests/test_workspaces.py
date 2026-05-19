@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,6 +248,70 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual(team_lark.sent, [])
                 self.assertIn("不存在", team_lark.replies[0][1])
                 self.assertIn("没有权限", team_lark.replies[-1][1])
+
+        asyncio.run(run())
+
+    def test_guarded_multi_workspace_consumers_restart_one_without_cancelling_peer(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                configs = write_workspace_config(tmp)
+                state = StateStore(Path(tmp) / "state.sqlite")
+                manager = WorkspaceManager(
+                    {
+                        "personal": WorkspaceRuntime("personal", configs["personal"], state, FakeLarkGateway(), None),
+                        "team": WorkspaceRuntime("team", configs["team"], state, FakeLarkGateway(), None),
+                    },
+                    default_workspace="personal",
+                )
+                old_env = {key: os.environ.get(key) for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FAR_CONFIG", "FAR_STATE")}
+                os.environ["FEISHU_APP_ID"] = "test-app"
+                os.environ["FEISHU_APP_SECRET"] = "test-secret"
+                os.environ["FAR_CONFIG"] = str(Path(tmp) / "config.yaml")
+                os.environ["FAR_STATE"] = str(Path(tmp) / "main-state.sqlite")
+                try:
+                    import config as app_config
+
+                    app_config.FAR_CONFIG = os.environ["FAR_CONFIG"]
+                    app_config.FAR_STATE = os.environ["FAR_STATE"]
+                    main = importlib.reload(importlib.import_module("main"))
+                    calls = {"personal": 0, "team": 0}
+                    personal_restarted = asyncio.Event()
+                    team_survived = asyncio.Event()
+
+                    async def fake_consumer(workspace, _manager):
+                        calls[workspace.workspace_id] += 1
+                        if workspace.workspace_id == "personal" and calls["personal"] == 1:
+                            raise RuntimeError("personal crashed")
+                        if workspace.workspace_id == "personal":
+                            personal_restarted.set()
+                            await asyncio.Event().wait()
+                        await personal_restarted.wait()
+                        team_survived.set()
+                        await asyncio.Event().wait()
+
+                    original = main.consume_workspace_events_forever
+                    main.consume_workspace_events_forever = fake_consumer
+                    tasks = [
+                        asyncio.create_task(main._consume_workspace_guarded(manager.runtime_for("personal"), manager, sleeper=lambda _: asyncio.sleep(0))),
+                        asyncio.create_task(main._consume_workspace_guarded(manager.runtime_for("team"), manager, sleeper=lambda _: asyncio.sleep(0))),
+                    ]
+                    try:
+                        await asyncio.wait_for(personal_restarted.wait(), timeout=1)
+                        await asyncio.wait_for(team_survived.wait(), timeout=1)
+                    finally:
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                        main.consume_workspace_events_forever = original
+
+                    self.assertEqual(calls["personal"], 2)
+                    self.assertEqual(calls["team"], 1)
+                finally:
+                    for key, value in old_env.items():
+                        if value is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
 
         asyncio.run(run())
 

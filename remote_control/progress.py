@@ -159,9 +159,12 @@ def _shorten(text: str, limit: int) -> str:
 
 async def maybe_emit(reporter: ProgressReporter | None, progress: RunProgress) -> None:
     if reporter is not None:
-        await reporter.update(progress)
+        try:
+            await reporter.update(progress)
+        except Exception as exc:
+            logger.warning("progress reporter update failed; continuing run: %s", exc)
 
 
 def schedule_emit(tasks: list[asyncio.Task], reporter: ProgressReporter | None, progress: RunProgress) -> None:
     if reporter is not None:
-        tasks.append(asyncio.create_task(reporter.update(progress)))
+        tasks.append(asyncio.create_task(maybe_emit(reporter, progress)))

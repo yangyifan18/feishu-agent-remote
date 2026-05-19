@@ -42,6 +42,13 @@ class FakeProgressReporter:
         self.events.append(progress)
 
 
+class FailingFinalProgressReporter(FakeProgressReporter):
+    async def update(self, progress):
+        self.events.append(progress)
+        if progress.status == "succeeded":
+            raise RuntimeError("reply down")
+
+
 class EventingRunner:
     def __init__(self):
         self.calls = []
@@ -168,6 +175,18 @@ class ProgressReplyTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_lark_gateway_card_update_targets_message_id_not_card_id(self):
+        async def run():
+            gateway = FakeLarkCardGateway({})
+            handle = ReplyHandle(mode="card", workspace_id="default", message_id="om_message", card_id="card_distinct")
+
+            await gateway.update_progress_card(handle, progress(status="running", text="update"))
+
+            self.assertIn("/open-apis/im/v1/messages/om_message", gateway.argv[0])
+            self.assertNotIn("/open-apis/im/v1/messages/card_distinct", gateway.argv[0])
+
+        asyncio.run(run())
+
     def test_progress_card_redacts_secret_like_text(self):
         card = _build_progress_card(progress(text="token=abc123456789 bearer abcdefghijklmnop sk-abcdefghijklmnop"))
 
@@ -221,6 +240,38 @@ class ProgressReplyTests(unittest.TestCase):
                 )
 
                 self.assertEqual(runner.calls[0], ("start", "/tmp/agent", "do work", False))
+
+        asyncio.run(run())
+
+    def test_progress_reporter_failure_does_not_wedge_start_new(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                state = StateStore(Path(tmp) / "state.sqlite")
+                manager = RunManager(state, EventingRunner())
+                reporter = FailingFinalProgressReporter()
+
+                run_record, result = await manager.start_new(
+                    chat_id="oc",
+                    thread_key="chat:oc",
+                    message_id="om",
+                    repo_alias="agent",
+                    repo_path=Path("/tmp/agent"),
+                    prompt="do work",
+                    progress_reporter=reporter,
+                )
+                manager.release_binding("oc", "chat:oc", run_record.id)
+                retry, _ = await manager.start_new(
+                    chat_id="oc",
+                    thread_key="chat:oc",
+                    message_id="om_retry",
+                    repo_alias="agent",
+                    repo_path=Path("/tmp/agent"),
+                    prompt="retry",
+                )
+
+                self.assertEqual(result.status, "succeeded")
+                self.assertEqual(state.get_run(run_record.id).status, "succeeded")
+                self.assertEqual(state.get_run(retry.id).status, "succeeded")
 
         asyncio.run(run())
 
