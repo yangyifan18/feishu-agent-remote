@@ -196,6 +196,15 @@ class ProgressReplyTests(unittest.TestCase):
         self.assertNotIn("abcdefghijklmnop", rendered)
         self.assertIn("[REDACTED]", rendered)
 
+    def test_progress_card_metadata_uses_real_newlines_not_literal_escapes(self):
+        card = _build_progress_card(progress(run_id="run_abc", status="running", text="working"))
+        metadata = card["elements"][0]["text"]["content"]
+
+        self.assertIn("\nRepo:", metadata)
+        self.assertIn("\nRuntime:", metadata)
+        self.assertNotIn("\\n", metadata)
+        self.assertNotIn("`", metadata)
+
     def test_run_manager_emits_lifecycle_progress(self):
         async def run():
             with tempfile.TemporaryDirectory() as tmp:

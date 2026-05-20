@@ -147,7 +147,7 @@ def _build_progress_card(progress: object) -> dict:
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {"title": {"tag": "plain_text", "content": f"{title} · {status}"}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**Run**: `{run_id}`\\n**Repo**: `{repo_alias}`\\n**Runtime**: `{runtime}`"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"Run: {run_id}\nRepo: {repo_alias}\nRuntime: {runtime}"}},
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": text or status}},
         ],
